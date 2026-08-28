@@ -25,7 +25,9 @@ C
 
 ## 安装与数据
 
-适用 Zotero **10.0.x**。在“工具 → 插件 → 从文件安装插件”中选择 XPI，
+**[下载 v3.0.2 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.2/zotero10-scholar-3.0.2.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
+
+适用 Zotero **10.0.x**。**不要解压 XPI**；在“工具 → 插件 → 从文件安装插件”中选择下载的文件，
 然后在文献列表列标题的右键菜单中勾选“索书号”。先预览少量条目，再更新。
 
 **公开源码和默认 XPI 不附带 CCF/JCR/中科院整表。** 安装后请在

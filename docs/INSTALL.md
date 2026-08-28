@@ -2,6 +2,8 @@
 
 版本：3.0.2。适用 Zotero 10.0.x。
 
+**[下载 v3.0.2 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.2/zotero10-scholar-3.0.2.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
+
 ## 安装
 
 1. 如仍启用原 Zotero 7 Scholar Rank 插件，先停用，避免同时写索书号。本项目 3.0.x 可直接升级，无需卸载。
