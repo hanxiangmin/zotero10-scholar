@@ -1,7 +1,11 @@
-# Zotero 10 Scholar Rank
+# Zotero 10 Scholar Rank：CCF、JCR 与中科院期刊分区插件
 
-在 Zotero 10 的原生**索书号**列显示 CCF、影响因子、JCR 分区和中科院大类分区及 TOP。
-An offline journal/conference metrics plugin for Zotero 10.
+面向**学术文献管理**的 **Zotero 分区插件**，适用于 Zotero 10：在原生**索书号**列显示
+**CCF A/B/C**、**影响因子（JIF）**、**JCR Q1–Q4**，以及 **2025 中科院升级版大类分区**和 TOP 标记。
+
+A Zotero 10 plugin for academic reference management: CCF conference/journal ranks,
+Journal Impact Factor (JIF), JCR quartiles and CAS journal rankings in the Call Number column.
+Offline lookup using locally imported data.
 
 **基于 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank) 的功能设计与使用流程，
 面向 Zotero 10 重新实现。** 非原作者官方发行版。参考版本、修改内容和许可范围见 [NOTICE.md](NOTICE.md)。
@@ -19,7 +23,8 @@ C
 - 右键菜单简写为 **Scholar Rank**，支持预览、更新、覆盖前备份和恢复。
 - 优先用有效 ISSN/eISSN 匹配，其次是唯一刊名/明确别名；歧义不猜测。
 - 区分期刊与会议；Workshops、Findings 等不套用主会议等级。
-- JCR 多学科可显示最佳、最低或全部分区。中科院固定使用 **2025 升级版大类分区**，不读取新锐 XR。
+- JIF 为数据包所载指标年的期刊影响因子；会议不显示期刊影响因子与分区。
+- JCR 期刊分区支持多学科的最佳、最低或全部分区。中科院固定使用 **2025 升级版大类分区**，不读取新锐 XR。
 - 原索书号保存在 Extra 中，保留其他内容；支持 Zotero 撤销/重做，保护手动改过的结果。
 - 离线查询，不需要账号或 API 密钥，不向服务器发送文献内容。新条目自动填充默认关闭。
 
