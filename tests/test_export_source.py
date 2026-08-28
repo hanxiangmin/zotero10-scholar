@@ -21,7 +21,9 @@ class SourceExportTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="scholar-export-test-")
         self.addCleanup(self.temporary.cleanup)
-        self.base = Path(self.temporary.name)
+        # Windows TEMP may use an 8.3 short path. Match the exporter's canonical
+        # paths in assertions and mocked reparse-point comparisons.
+        self.base = Path(self.temporary.name).resolve()
         self.root = self.base / "project"
         self.root.mkdir()
         self.payloads = {

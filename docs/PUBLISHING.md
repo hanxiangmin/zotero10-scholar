@@ -37,7 +37,7 @@ python scripts/export-source.py --out publish/zotero10-scholar-next
 
 上传 Release 前运行测试并确认 XPI 中不含 `data/*.json`，说明“公开版需用户自行导入数据”。
 GitHub Actions 只运行测试和公开构建，不自动创建 Release、推送代码或读取私人数据。
-本次提供的工作流尚未在你的远程仓库运行，首次上传后请查看 Actions 结果。
+每次推送后请查看 Actions 结果，确认 Windows 与 Linux 检查均通过。
 
 ## 在线更新
 
