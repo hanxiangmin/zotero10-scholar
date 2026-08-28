@@ -1,0 +1,35 @@
+name: Test and build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Test matching and Zotero integration mocks
+        run: node --test tests/core.test.cjs tests/plugin.test.cjs
+      - name: Test public packaging
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Build public XPI without third-party tables
+        run: python scripts/build.py
+      - name: Export clean source
+        run: python scripts/export-source.py

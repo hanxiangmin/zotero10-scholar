@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml" title="Scholar Rank · 指标预览"
+        width="1050" height="650" orient="vertical">
+  <html:style>
+    :root { color-scheme: light dark; }
+    main { font:14px/1.55 system-ui,sans-serif; padding:24px; overflow:auto; flex:1; color:light-dark(#222,#eee); background:light-dark(#fafbfc,#202124); }
+    h1 { font-size:23px; margin:0 0 6px; } p { margin:8px 0; }
+    .muted { color:light-dark(#586574,#b5bec9); } .table-wrap { overflow:auto; margin:20px 0; }
+    table { border-collapse:collapse; width:100%; font-size:13px; }
+    th { text-align:left; background:light-dark(#eaf0f5,#30343a); position:sticky; top:0; }
+    th, td { padding:11px 12px; border-bottom:1px solid light-dark(#dbe1e7,#434850); vertical-align:top; }
+    .rank { white-space:nowrap; font-family:ui-monospace,monospace; font-weight:600; color:light-dark(#185e54,#8ad9b2); }
+    .title { min-width:200px; max-width:380px; overflow-wrap:anywhere; }
+    .status { min-width:95px; } details { margin:14px 0; } pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; }
+    button { padding:6px 18px; cursor:pointer; } .warnings { color:light-dark(#a44319,#f5b296); }
+  </html:style>
+  <html:main>
+    <html:h1>期刊与会议指标</html:h1>
+    <html:p id="summary" class="muted"></html:p>
+    <html:p id="policy" class="muted"></html:p>
+    <html:p class="muted">仅预览，不会写入条目。关闭后可右键更新；已有索书号默认保护。</html:p>
+    <html:p id="warnings" class="warnings"></html:p>
+    <html:div class="table-wrap">
+      <html:table>
+        <html:thead><html:tr><html:th>论文 / 期刊或会议</html:th><html:th>原索书号</html:th><html:th>拟显示指标</html:th><html:th>状态</html:th></html:tr></html:thead>
+        <html:tbody id="rows"></html:tbody>
+      </html:table>
+    </html:div>
+    <html:details><html:summary>查看逐条来源、匹配依据与各学科分区</html:summary><html:pre id="sources"></html:pre></html:details>
+    <html:p class="muted">未匹配、未公布或不适用的指标省略，仅显示有数据的项；实际影响因子 0 和 &lt;0.1 保留。TOP 单独读取原始字段。指标属于期刊/会议，不能替代对单篇论文的判断。</html:p>
+    <html:button id="close">关闭</html:button>
+  </html:main>
+  <script src="preview.js"/>
+</window>

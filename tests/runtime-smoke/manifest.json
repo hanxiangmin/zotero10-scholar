@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "Scholar Rank — Isolated Runtime Smoke Test",
+  "version": "0.0.1",
+  "description": "Development-only integration tests. Refuses to operate outside a newly prepared work/smoke-* profile and data directory.",
+  "author": "Zotero 10 Scholar Rank development",
+  "applications": {
+    "zotero": {
+      "id": "zotero10-scholar-runtime-smoke@local",
+      "update_url": "https://updates.zotero10-scholar.invalid/runtime-smoke.json",
+      "strict_min_version": "10.0",
+      "strict_max_version": "10.0.*"
+    }
+  }
+}

@@ -1,0 +1,38 @@
+<vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+      xmlns:html="http://www.w3.org/1999/xhtml" onload="Zotero_Preferences.getScope('zotero10-scholar-settings').ScholarRankPrefs.init(window)">
+  <groupbox>
+    <label><html:h2>Scholar Rank · Zotero 10</html:h2></label>
+    <description>索书号格式：CCF | 年度影响因子 | JCR 分区 | 中科院大类分区及 TOP</description>
+    <description>只显示有数据的指标，缺失项及对应分隔符省略；仅有 CCF C 时显示 C。实际影响因子 0 和 &lt;0.1 保留。</description>
+    <html:p id="zsr10-version-summary" style="line-height:1.7;white-space:pre-wrap"></html:p>
+    <description>全部查询在本机完成。公开版不附带第三方指标数据，请自行导入有权使用的数据包；中科院固定为 2025 升级版大类分区，不读取新锐 XR 数据。</description>
+    <description>“最新”以数据版本为准，不会联网实时刷新。更新年份后需导入新数据包或重新打包插件。</description>
+  </groupbox>
+  <groupbox>
+    <label><html:h3>显示与更新</html:h3></label>
+    <html:label for="zsr10-quartile">同一期刊属于多个 JCR 学科时：</html:label>
+    <html:select id="zsr10-quartile" style="margin:8px 0;max-width:380px">
+      <html:option value="best">显示最佳分区（默认，例如 Q1）</html:option>
+      <html:option value="worst">显示最低分区（例如 Q2）</html:option>
+      <html:option value="all">显示全部不同分区（例如 Q1/Q2）</html:option>
+    </html:select>
+    <html:label style="display:flex;gap:8px;align-items:center;margin:12px 0">
+      <html:input id="zsr10-auto-new" type="checkbox"/>
+      导入新条目时自动填充空索书号
+    </html:label>
+    <description>默认不自动写入。已存在的真实索书号需使用“覆盖旧索书号（先备份）”确认替换。</description>
+    <description>预印本、学位论文、附件、只读库不处理；会议仅显示已匹配的 CCF 等级。Workshops、Findings 等不套用主会议等级。</description>
+  </groupbox>
+  <groupbox>
+    <label><html:h3>数据包</html:h3></label>
+    <html:button id="zsr10-import" style="align-self:flex-start;padding:7px 12px">导入 JSON 数据包…</html:button>
+    <description>支持本项目脚本生成的 CCF / JCR / CAS JSON。先校验来源、体系、年份和字段再加载，不执行导入文件中的代码。</description>
+    <html:p id="zsr10-load-warning" style="white-space:pre-wrap;color:#a33"></html:p>
+  </groupbox>
+  <groupbox>
+    <label><html:h3>备份和撤销</html:h3></label>
+    <description>首次写入时，原索书号保存在 Extra 的 “Zotero Scholar Rank:” 行中，其他 Extra 内容保留。不要删除该行，否则将失去插件恢复依据。</description>
+    <description>支持 Zotero 的撤销/重做；右键“恢复原索书号”可跨重启恢复。手动修改过的结果不会自动覆盖。卸载插件不会自动修改条目。</description>
+    <description>指标描述期刊或会议，不是对单篇论文质量的评定。</description>
+  </groupbox>
+</vbox>
