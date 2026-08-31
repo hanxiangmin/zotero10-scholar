@@ -3,6 +3,10 @@
   const { Catalog, planUpdate, planRestore } = root.ScholarCore;
   const PREF = "extensions.zotero10scholar.";
   const LABEL = "Zotero 10 Scholar Rank";
+  // Zotero awaits item observers in ascending priority order. Linter for
+  // Zotero/Format Metadata uses 666 so it can clean fields after other add-ons.
+  // Run the new-item lookup afterwards; this avoids both a race and retries.
+  const AUTO_NOTIFIER_PRIORITY = 700;
   const REASONS = {
     "unsupported-type": "非期刊/会议条目", "no-data": "没有匹配的数据", "invalid-backup": "备份格式异常",
     "manually-edited": "索书号被手动修改，已保护", "existing-call-number": "已有索书号，未覆盖",
@@ -66,7 +70,7 @@
             await this.apply(items, { silent: true });
           }).catch(e => Zotero.logError(e));
         }
-      }, ["item"], "zotero10-scholar");
+      }, ["item"], "zotero10-scholar", AUTO_NOTIFIER_PRIORITY);
     },
 
     pref(name) { return Zotero.Prefs.get(PREF + name, true); },
@@ -112,10 +116,10 @@
         menuID: "scholar-items", pluginID: this.id, target: "main/library/item",
         menus: [{ menuType: "submenu", l10nID: "zsr10-menu", menus: [
           command("preview", (items, win) => this.preview(items, win)),
-          command("update", (items, win) => this.apply(items, { win })),
+          command("update", (items, win) => this.apply(items, { repairCleared: true, win })),
           command("overwrite", async (items, win) => {
             if (Services.prompt.confirm(win, LABEL, "允许替换所选条目现有的索书号？\n\n原值会保存在 Extra 中，可用“恢复原索书号”或 Zotero 撤销恢复。被手动修改的插件结果仍会跳过。")) {
-              await this.apply(items, { allowOverwrite: true, win });
+              await this.apply(items, { allowOverwrite: true, repairCleared: true, win });
             }
           }),
           command("restore", async (items, win) => {
@@ -154,12 +158,14 @@
       return () => { this.busy = false; this.currentOperation = null; done(); };
     },
 
-    async apply(items, { allowOverwrite = false, restore = false, silent = false, win = this.window() } = {}) {
+    async apply(items, {
+      allowOverwrite = false, repairCleared = false, restore = false, silent = false, win = this.window()
+    } = {}) {
       if (!this.active) return;
       if (this.busy) {
         if (silent) {
           await this.currentOperation;
-          return this.apply(items, { allowOverwrite, restore, silent, win });
+          return this.apply(items, { allowOverwrite, repairCleared, restore, silent, win });
         }
         this.alert("上一批更新尚未结束，请稍后再试。", win);
         return;
@@ -174,7 +180,9 @@
           if (!this.supported(item)) { count("unsupported-type"); continue; }
           if (!this.editable(item)) { count("read-only"); continue; }
           const before = this.snapshot(item);
-          const plan = restore ? planRestore(before) : planUpdate(before, this.catalog.lookup(before, this.policy()), { allowOverwrite });
+          const plan = restore ? planRestore(before) : planUpdate(
+            before, this.catalog.lookup(before, this.policy()), { allowOverwrite, repairCleared }
+          );
           if (plan.action === "write") changes.push({ item, before, plan });
           else count(plan.reason);
         }
@@ -226,7 +234,7 @@
       const rows = items.filter(i => this.supported(i)).map(item => {
         const snapshot = this.snapshot(item);
         const result = this.catalog.lookup(snapshot, this.policy());
-        const plan = planUpdate(snapshot, result);
+        const plan = planUpdate(snapshot, result, { repairCleared: true });
         return { ...snapshot, result, status: !this.editable(item) ? REASONS["read-only"] : plan.action === "write" ? "可更新" : REASONS[plan.reason] };
       });
       const dialog = win.openDialog("chrome://zotero10-scholar/content/preview.xhtml", "", "chrome,centerscreen,resizable,width=1050,height=650", {

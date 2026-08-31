@@ -39,7 +39,7 @@ python scripts/prepare-smoke.py
 公开无数据安装包也有独立实机分支，使用测试脚本内的合成数据检查本地覆盖包的加载，不把它当作真实期刊指标：
 
 ```sh
-python scripts/prepare-smoke.py --product dist/zotero10-scholar-3.0.2.xpi --auto-close
+python scripts/prepare-smoke.py --product dist/zotero10-scholar-3.0.3.xpi --auto-close
 ```
 
 准备命令只创建新的 `work/smoke-*/profile` 和 `data`，打印明确的启动命令。

@@ -30,7 +30,7 @@ C
 
 ## 安装与数据
 
-**[下载 v3.0.2 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.2/zotero10-scholar-3.0.2.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
+**[下载 v3.0.3 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.3/zotero10-scholar-3.0.3.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
 
 适用 Zotero **10.0.x**。**不要解压 XPI**；在“工具 → 插件 → 从文件安装插件”中选择下载的文件，
 然后在文献列表列标题的右键菜单中勾选“索书号”。先预览少量条目，再更新。
@@ -42,8 +42,19 @@ C
 数据转换方法和格式见 [数据说明](data/README.md) 与 [JSON 格式](docs/DATA_FORMAT.md)。
 数据年份由包内元数据决定，不联网自动刷新。指标属于期刊/会议，不能替代对单篇论文的判断。
 
-从本项目 3.0.0/3.0.1 升级时直接安装新 XPI，无需卸载。现有字符串需选中文献后执行
+从本项目 3.0.0–3.0.2 升级时直接安装新 XPI，无需卸载。现有字符串需选中文献后执行
 **Scholar Rank → 更新所选条目（保护已有索书号）** 才会更新。[完整安装说明](docs/INSTALL.md)
+
+### 与 Linter for Zotero / Format Metadata 共存
+
+如果同时使用 [Linter for Zotero（Format Metadata）](https://github.com/northword/zotero-format-metadata)，
+请在其设置的“条目级规则”中取消 **“清理被滥用的标准字段”**。可以继续保留
+“添加条目时自动执行 Lint”和其他格式化规则，无需停用整个插件。
+
+该规则会主动清空索书号中的影响因子/分区字符串，例如 `3.6|Q1|3区`。3.0.3 已让新增条目的
+Scholar Rank 写入排在该自动清理之后；但以后手动执行其完整 Lint 仍会再次清空，所以仍建议关闭这一条规则。
+这是两个插件对 `callNumber` 字段用途不同造成的直接冲突，不是指标匹配失败。
+详见[安装说明中的兼容性排查](docs/INSTALL.md#与-linter-for-zotero--format-metadata-共存)。
 
 ## 开发与构建
 
@@ -56,8 +67,8 @@ python scripts/build.py
 python scripts/export-source.py
 ```
 
-- `dist/zotero10-scholar-3.0.2.xpi`：不带第三方数据的公开安装包。
-- `dist/zotero10-scholar-3.0.2-source.zip`：公开源码压缩包。
+- `dist/zotero10-scholar-3.0.3.xpi`：不带第三方数据的公开安装包。
+- `dist/zotero10-scholar-3.0.3-source.zip`：公开源码压缩包。
 - `publish/zotero10-scholar/`：可上传到新仓库的干净源码目录，不含旧 `.git` 历史。
 
 含本地数据的个人构建需要显式运行 `python scripts/build.py --with-data`，

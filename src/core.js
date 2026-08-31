@@ -222,12 +222,21 @@
     return text.slice(0, start) + text.slice(match.index + match[0].length);
   }
 
-  function planUpdate(item, result, { allowOverwrite = false, now = new Date().toISOString() } = {}) {
+  function planUpdate(item, result, {
+    allowOverwrite = false, repairCleared = false, now = new Date().toISOString()
+  } = {}) {
     if (!result.supported) return { action: "skip", reason: "unsupported-type" };
     const { state, corrupt } = readState(item.extra);
     if (corrupt) return { action: "skip", reason: "invalid-backup" };
     const current = String(item.callNumber || "");
-    if (state && state.last !== current) return { action: "skip", reason: "manually-edited" };
+    // A metadata linter may clear callNumber while leaving our exact state in
+    // Extra. Only an explicit user action may repair that empty field; normal
+    // refreshes still protect every non-empty manual edit.
+    const mayRepairCleared = Boolean(state && repairCleared && !current && state.last
+      && (result.text === state.last || allowOverwrite));
+    if (state && state.last !== current && !mayRepairCleared) {
+      return { action: "skip", reason: "manually-edited" };
+    }
     // A public build may have no bundled catalogs. Missing source packages must
     // not be mistaken for a venue changing to one with no matching metrics.
     if (state && Array.isArray(result.availableKinds)

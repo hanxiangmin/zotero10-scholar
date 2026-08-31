@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero 10 Scholar Rank",
-  "version": "3.0.2",
+  "version": "3.0.3",
   "description": "索书号显示 CCF、年度影响因子、JCR 与 2025 中科院大类分区及 TOP（离线数据）。",
   "author": "Zotero 10 Scholar Rank contributors",
   "icons": {

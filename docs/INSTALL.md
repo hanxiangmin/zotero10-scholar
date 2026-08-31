@@ -1,13 +1,13 @@
 # 安装与使用
 
-版本：3.0.2。适用 Zotero 10.0.x。
+版本：3.0.3。适用 Zotero 10.0.x。
 
-**[下载 v3.0.2 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.2/zotero10-scholar-3.0.2.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
+**[下载 v3.0.3 插件（XPI）](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.0.3/zotero10-scholar-3.0.3.xpi)** · [全部 Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)
 
 ## 安装
 
 1. 如仍启用原 Zotero 7 Scholar Rank 插件，先停用，避免同时写索书号。本项目 3.0.x 可直接升级，无需卸载。
-2. 打开“工具 → 插件”，从齿轮菜单选择“从文件安装插件”，选择 `zotero10-scholar-3.0.2.xpi`。不要解压 XPI。
+2. 打开“工具 → 插件”，从齿轮菜单选择“从文件安装插件”，选择 `zotero10-scholar-3.0.3.xpi`。不要解压 XPI。
 3. 公开版不附带第三方指标表；打开“工具 → Scholar Rank 设置与数据版本”，依次导入你有权使用的 CCF、JCR、CAS JSON。
 4. 在文献列表的列标题上右键 → 更多列 → 勾选“索书号”。
 5. 选中几条熟悉的论文 → 右键 **Scholar Rank → 预览指标与数据来源**。
@@ -43,6 +43,28 @@
 当前 CAS 数据格式只接受 2025 升级版大类分区，不接受新锐 XR、小类分区或其他年份替代。
 JCR 年份以数据包注明的发布年和指标年为准。查询是离线的，不会自动更新到未来年度。
 默认不自动填充新条目；如需要，可在设置页开启。
+
+## 与 Linter for Zotero / Format Metadata 共存
+
+[Linter for Zotero（Format Metadata）](https://github.com/northword/zotero-format-metadata) 3.3.2
+默认在新增条目后运行“清理被滥用的标准字段”。该规则把 `callNumber`（索书号）中的部分期刊指标
+视为字段滥用，会清空以数字影响因子开头或以 `X区` 结尾的值并再次保存条目。因此可能看到
+`3.6|Q1|3区`、`20.4|Q1|1区TOP` 等内容先出现、随后消失；单独的 `C` 等未命中其规则的值则可能保留。
+Scholar Rank 3.0.3 已把新增条目的自动写入排在这项自动清理之后；但以后手动执行完整 Lint 时，
+该规则仍会再次清空索书号，所以下面的设置才是长期共存方式。
+
+共存设置：
+
+1. 重新启用 Linter for Zotero / Format Metadata。
+2. 打开该插件的设置，找到“条目级规则”。
+3. 只取消 **“清理被滥用的标准字段”**。
+4. “添加条目时自动执行 Lint”和其余需要的格式化规则可以继续启用。
+
+无需停用整个插件。Scholar Rank 不会自动修改另一个插件的设置，也不会在后台无限重写索书号来对抗清理规则。
+如果关闭该规则后旧条目的索书号已经为空，选中条目后执行一次
+**Scholar Rank → 更新所选条目（保护已有索书号）** 即可重新生成。这个安全修复只在当前计算结果仍与
+Extra 中记录的上次结果一致时执行；如果数据包或分区策略已经变化并提示“索书号被手动修改”，请改用
+**覆盖旧索书号（先备份）** 并确认。已有 Scholar Rank 状态、后来又改成非空手工值的条目仍会跳过。
 
 本项目未配置在线更新服务器。默认 `.invalid` 更新地址可能使“检查更新”提示连接失败，
 不影响本地功能；升级请手动安装新 XPI。

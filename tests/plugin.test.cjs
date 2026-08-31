@@ -52,7 +52,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     transactionGate: null, pickerQueue: [], inputFiles: new Map(),
     outputFiles: new Map([...localFiles].map(([filename, data]) => [filename, structuredClone(data)])),
     writes: [], beforeWrite: null, autoNew: true, resourceReads: [], localReads: [],
-    activeMenus: new Set(), activePanes: new Set()
+    activeMenus: new Set(), activePanes: new Set(), menuConfigs: new Map(), observerPriority: null
   };
 
   class FilePicker {
@@ -85,15 +85,26 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     ftl: { addResourceIds() {}, removeResourceIds() {} },
     getMainWindows: () => [], getMainWindow: () => null,
     MenuManager: {
-      registerMenu: ({ menuID }) => { state.activeMenus.add(menuID); return menuID; },
-      unregisterMenu: menuID => state.activeMenus.delete(menuID)
+      registerMenu: config => {
+        state.activeMenus.add(config.menuID);
+        state.menuConfigs.set(config.menuID, config);
+        return config.menuID;
+      },
+      unregisterMenu: menuID => {
+        state.menuConfigs.delete(menuID);
+        return state.activeMenus.delete(menuID);
+      }
     },
     PreferencePanes: {
       register: async () => { state.activePanes.add("fake-pane"); return "fake-pane"; },
       unregister: paneID => state.activePanes.delete(paneID)
     },
     Notifier: {
-      registerObserver: observer => { state.observer = observer; return 1; },
+      registerObserver: (observer, _types, _name, priority) => {
+        state.observer = observer;
+        state.observerPriority = priority;
+        return 1;
+      },
       unregisterObserver: () => { state.observer = null; }
     },
     Prefs: { get: key => key.endsWith("autoNew") ? state.autoNew : "best", set() {} },
@@ -311,6 +322,8 @@ test("preview remains tracked through initial about:blank unload and closes on s
 
 test("new-item automatic updates wait for a manual batch instead of being dropped", { timeout: 5000 }, async t => {
   const { plugin, state, item } = await harness();
+  assert.equal(state.observerPriority, 700,
+    "new-item ranks must run after Format Metadata/Linter priority 666");
   const manualItem = item(1), addedItem = item(2);
   manualItem.saveGate = deferred();
   t.after(() => manualItem.saveGate.resolve());
@@ -327,6 +340,81 @@ test("new-item automatic updates wait for a manual batch instead of being droppe
   assert.deepEqual(state.saveIDs, [manualItem.id, addedItem.id]);
   assert.equal(state.persisted.get(addedItem.id).callNumber, "A|20.4|Q1|1区TOP");
   assert.equal(state.commits, 2);
+});
+
+test("Zotero priority ordering leaves Scholar Rank after Format Metadata cleanup", async () => {
+  const { plugin, state, item } = await harness();
+  const added = item(8, { callNumber: "23.6|Q1|3区" });
+  const order = [];
+  const observers = [
+    {
+      priority: 666,
+      notify: async () => {
+        order.push("format-metadata");
+        added.fields.callNumber = "";
+        state.persisted.set(added.id, { ...added.fields });
+      }
+    },
+    {
+      priority: state.observerPriority,
+      notify: (...args) => {
+        order.push("scholar-rank");
+        return state.observer.notify(...args);
+      }
+    }
+  ];
+
+  for (const observer of observers.sort((a, b) => a.priority - b.priority)) {
+    await Promise.resolve(observer.notify("add", "item", [added.id], {}));
+  }
+  await plugin.pendingAuto;
+
+  assert.deepEqual(order, ["format-metadata", "scholar-rank"]);
+  assert.equal(state.persisted.get(added.id).callNumber, "A|20.4|Q1|1区TOP");
+});
+
+test("an explicit update repairs an externally cleared rank but preserves non-empty manual edits", async () => {
+  const environment = await harness();
+  const { plugin, state, item } = environment;
+  const { record } = previouslyManagedItem(environment, 7);
+  const expected = Core.readState(record.fields.extra).state.last;
+
+  record.fields.callNumber = "";
+  state.persisted.set(record.id, { ...record.fields });
+  assert.equal((await plugin.apply([record], { silent: true }))["manually-edited"], 1);
+  assert.equal(record.fields.callNumber, "");
+
+  const repaired = await plugin.apply([record], { repairCleared: true, silent: true });
+  assert.equal(repaired.written, 1);
+  assert.equal(record.fields.callNumber, expected);
+
+  record.fields.callNumber = "User shelf mark";
+  state.persisted.set(record.id, { ...record.fields });
+  assert.equal((await plugin.apply([record], { repairCleared: true, silent: true }))["manually-edited"], 1);
+  assert.equal(record.fields.callNumber, "User shelf mark");
+});
+
+test("the confirmed overwrite menu can refresh a cleared rank after metrics change", async () => {
+  const environment = await harness();
+  const { plugin, state, item } = environment;
+  const { record } = previouslyManagedItem(environment, 9);
+  record.fields.callNumber = "";
+  state.persisted.set(record.id, { ...record.fields });
+
+  const newer = jcrDataset();
+  newer.records[0].jif = 21.1;
+  plugin.catalog.replace(newer);
+  assert.equal(plugin.catalog.lookup(plugin.snapshot(record)).text, "A|21.1|Q1|1区TOP");
+
+  const itemMenu = state.menuConfigs.get("scholar-items");
+  const overwrite = itemMenu.menus[0].menus.find(menu => menu.l10nID === "zsr10-overwrite");
+  overwrite.onCommand(null, { items: [record], menuElem: { ownerGlobal: {} } });
+  await tick();
+  if (plugin.currentOperation) await plugin.currentOperation;
+  await tick();
+
+  assert.equal(record.fields.callNumber, "A|21.1|Q1|1区TOP");
+  assert.equal(Core.readState(record.fields.extra).state.original, "QA76 original shelf mark");
 });
 
 test("stop waits for an in-flight last save and rolls the transaction back", { timeout: 5000 }, async t => {

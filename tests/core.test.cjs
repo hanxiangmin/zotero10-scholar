@@ -655,6 +655,35 @@ test("manual call-number edits block both refresh and restore, even with overwri
   assert.deepEqual(saved, before);
 });
 
+test("only an explicit repair may restore an externally cleared managed result", () => {
+  const result = fullCatalog().lookup(journal());
+  const original = { callNumber: "", extra: "Keep" };
+  const managed = applyPlan(original, planUpdate(original, result, { now: NOW }));
+  const cleared = { ...managed, callNumber: "" };
+
+  assert.deepEqual(planUpdate(cleared, result), { action: "skip", reason: "manually-edited" });
+  const repaired = applyPlan(cleared, planUpdate(cleared, result, { repairCleared: true }));
+  assert.equal(repaired.callNumber, result.text);
+  assert.equal(readState(repaired.extra).state.original, original.callNumber);
+
+  const changedResult = metricCatalog({ rank: "A", jif: 21.1, quartile: "Q1", division: 1 }).lookup(journal());
+  assert.notEqual(changedResult.text, result.text);
+  assert.deepEqual(planUpdate(cleared, changedResult, { repairCleared: true }), {
+    action: "skip", reason: "manually-edited"
+  }, "repair must not turn an empty manual edit into a metric refresh");
+  const refreshed = applyPlan(cleared, planUpdate(cleared, changedResult, {
+    repairCleared: true, allowOverwrite: true
+  }));
+  assert.equal(refreshed.callNumber, changedResult.text,
+    "the confirmed overwrite path may refresh a cleared value with changed metrics");
+  assert.equal(readState(refreshed.extra).state.original, original.callNumber);
+
+  const manual = { ...managed, callNumber: "User shelf mark" };
+  assert.deepEqual(planUpdate(manual, result, { repairCleared: true }), {
+    action: "skip", reason: "manually-edited"
+  });
+});
+
 test("corrupt JSON, unsupported state schemas, and duplicate backup prefixes block all writes", () => {
   const result = fullCatalog().lookup(journal());
   const invalidExtras = [
