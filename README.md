@@ -7,6 +7,11 @@ A Zotero 10 plugin for academic reference management: CCF conference/journal ran
 Journal Impact Factor (JIF), JCR quartiles and CAS journal rankings in the Call Number column.
 Offline lookup using locally imported data.
 
+> [!WARNING]
+> **同时安装 Linter for Zotero（原 Format Metadata）时，请先关闭它的“清理被滥用的标准字段”规则。**
+> 否则索书号中的影响因子/分区可能出现后又消失。无需禁用整个插件；
+> v3.0.3 的新增条目兼容修复不能阻止以后手动 Lint 再次清空。[共存设置与恢复方法](#linter-compatibility)
+
 **基于 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank) 的功能设计与使用流程，
 面向 Zotero 10 重新实现。** 非原作者官方发行版。参考版本、修改内容和许可范围见 [NOTICE.md](NOTICE.md)。
 
@@ -45,16 +50,30 @@ C
 从本项目 3.0.0–3.0.2 升级时直接安装新 XPI，无需卸载。现有字符串需选中文献后执行
 **Scholar Rank → 更新所选条目（保护已有索书号）** 才会更新。[完整安装说明](docs/INSTALL.md)
 
+<a id="linter-compatibility"></a>
+
 ### 与 Linter for Zotero / Format Metadata 共存
 
 如果同时使用 [Linter for Zotero（Format Metadata）](https://github.com/northword/zotero-format-metadata)，
-请在其设置的“条目级规则”中取消 **“清理被滥用的标准字段”**。可以继续保留
-“添加条目时自动执行 Lint”和其他格式化规则，无需停用整个插件。
+请在 **Linter 设置 → 条目级规则** 中取消 **“清理被滥用的标准字段”**（`no-field-misuse`）。
+“添加条目时自动执行 Lint”和其他格式化规则可以继续保留；如果已停用整个 Linter，完成该设置后可重新启用。
 
 该规则会主动清空索书号中的影响因子/分区字符串，例如 `3.6|Q1|3区`。3.0.3 已让新增条目的
 Scholar Rank 写入排在该自动清理之后；但以后手动执行其完整 Lint 仍会再次清空，所以仍建议关闭这一条规则。
-这是两个插件对 `callNumber` 字段用途不同造成的直接冲突，不是指标匹配失败。
-详见[安装说明中的兼容性排查](docs/INSTALL.md#与-linter-for-zotero--format-metadata-共存)。
+这是两个插件对 `callNumber` 字段用途不同造成的直接冲突，不是指标匹配失败；
+仅关闭“添加条目时自动执行 Lint”也不能避免手动清理。
+
+**已有指标消失时：** 先关闭上述规则，再选中受影响条目，右键
+**Scholar Rank → 更新所选条目（保护已有索书号）**。如果数据包或分区策略已改变，
+安全更新可能跳过；请按[安装说明中的恢复步骤](docs/INSTALL.md#与-linter-for-zotero--format-metadata-共存)
+使用“覆盖旧索书号（先备份）”并确认。请保留 Extra 中的 `Zotero Scholar Rank:` 备份行。
+
+截至 2026-09-05，上游 3.3.2 及所核对的 main 提交仍包含这项
+[索书号清理规则](https://github.com/northword/zotero-format-metadata/blob/095ada8b6cb8ed1e853b1c0f49b13d7020f514d0/src/modules/rules/no-field-misuse.ts)。
+本插件不会自动修改 Linter 的设置。
+
+For coexistence, disable only Linter's `no-field-misuse` rule. Scholar Rank 3.0.3 adjusts automatic
+new-item ordering, but a later manual Lint can still clear ranking values from Call Number.
 
 ## 开发与构建
 
@@ -84,7 +103,7 @@ python scripts/export-source.py
 | 文档 | 内容 |
 | --- | --- |
 | [修改记录](CHANGELOG.md) | 本版相对参考项目和早期版本的变化 |
-| [开发说明](docs/DEVELOPMENT.md) | 目录结构、构建与隔离测试 |
+| [开发说明](docs/DEVELOPMENT.md) | 目录结构、构建、隔离测试与元数据整理功能整合评估 |
 | [测试说明](docs/TESTING.md) | 自动化检查、真实数据测试的跳过条件 |
 | [上传与发布](docs/PUBLISHING.md) | 公开目录、Git 历史、Release 与数据边界 |
 | [贡献指南](CONTRIBUTING.md) | 提交改动与问题报告 |
@@ -94,6 +113,10 @@ python scripts/export-source.py
 本项目公开包内的新实现采用 [MIT License](LICENSE)。此许可证不涵盖第三方数据和上游旧实现。
 感谢 SiriusXT 的原插件设计、ShowJCR 的数据表结构整理，以及 Zotero 的开发文档和接口。
 详细来源与范围见 [NOTICE.md](NOTICE.md)。
+
+Linter for Zotero 使用 **AGPL-3.0-or-later**。当前版本尚未合入其运行时代码；
+直接移植其代码形成的合并版本需要按 AGPL 发布，并保留来源、修改说明和对应源码。
+拟保留的核心功能及两种实现路线见[元数据整理功能整合评估](docs/DEVELOPMENT.md#metadata-integration)。
 
 ### 开发贡献
 

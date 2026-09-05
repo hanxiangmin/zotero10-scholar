@@ -29,6 +29,17 @@
 数据来源以 [ShowJCR 的来源说明](https://github.com/hitfyd/ShowJCR/blob/2557e1856ba9f8eb945f781deeda1e5fb58ace88/README.md)
 及数据权利人的许可为准，另参见 [中科院分区表使用协议](https://www.fenqubiao.com/User/UseProtocol.aspx)。
 
+## Linter 共存与功能评估
+
+[northword/zotero-format-metadata（Linter for Zotero）](https://github.com/northword/zotero-format-metadata)
+是本项目已知的共存插件，也是元数据整理功能的评估参考。2026-09-05 核对提交
+[`095ada8b6cb8ed1e853b1c0f49b13d7020f514d0`](https://github.com/northword/zotero-format-metadata/tree/095ada8b6cb8ed1e853b1c0f49b13d7020f514d0)
+的包元数据声明 `AGPL-3.0-or-later`，仓库附 AGPL v3 许可全文。
+
+当前版本仅对其索书号清理行为做兼容处理，未合入该插件的运行时代码、图标或数据表，亦非其官方发行版。
+将来若直接移植其代码，合并形成的衍生版本须遵守 AGPL，不能用本项目 MIT 声明覆盖上游许可。
+拟保留功能、依赖与许可处理见[开发说明中的整合评估](docs/DEVELOPMENT.md#metadata-integration)。
+
 ## 本项目许可证的范围
 
 公开导出目录内的新实现、构建/转换脚本、合成测试、新图标和本文档按 [MIT](LICENSE) 提供。
