@@ -2,7 +2,7 @@
 
 为 Zotero 10 提供元数据整理、DOI 信息更新和学术分区显示。内置 CCF、JCR 和中科院指标表，在索书号中展示 `A|20.4|Q1|1区TOP`；缺失指标直接省略，例如只显示 `C`。
 
-**3.1.2 重构：统一为三个操作，自动处理与手动更新分别设置。**
+[下载安装包](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.1.2/zotero10-scholar-3.1.2.xpi) · [版本更新](https://github.com/hanxiangmin/zotero10-scholar/releases/tag/v3.1.2)
 
 ## 功能
 
@@ -26,9 +26,13 @@
 
 ## 界面
 
-![索书号中的学术指标展示示例](docs/images/scholar-rank-display.png)
+### 索书号指标
 
-![Scholar Rank 自动处理与整理规则设置](docs/images/scholar-rank-settings.png)
+![索书号中的学术指标展示示例](https://raw.githubusercontent.com/hanxiangmin/zotero10-scholar/be8c981f899d4d80d1a9ffb17624701caebc33a4/docs/images/scholar-rank-display.png)
+
+### 自动处理与整理规则
+
+![Scholar Rank 自动处理与整理规则设置](https://raw.githubusercontent.com/hanxiangmin/zotero10-scholar/be8c981f899d4d80d1a9ffb17624701caebc33a4/docs/images/scholar-rank-settings.png)
 
 ## 开发
 

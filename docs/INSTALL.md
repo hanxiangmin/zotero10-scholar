@@ -1,6 +1,6 @@
 # 安装与使用
 
-版本：3.1.2，适用 Zotero 10.0.x。重构源码已提供，含表安装包待确认数据再分发授权后上传 Release。
+版本：3.1.2，适用 Zotero 10.0.x。[下载安装包](https://github.com/hanxiangmin/zotero10-scholar/releases/download/v3.1.2/zotero10-scholar-3.1.2.xpi)。
 
 ## 安装
 
