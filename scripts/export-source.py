@@ -45,6 +45,8 @@ FILES = (
     "docs/PUBLISHING.md",
     "docs/DATA_FORMAT.md",
     "docs/TESTING.md",
+    "docs/images/scholar-rank-display.png",
+    "docs/images/scholar-rank-settings.png",
     "scripts/build.py",
     "scripts/export-source.py",
     "scripts/import-showjcr.py",

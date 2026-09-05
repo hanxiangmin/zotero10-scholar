@@ -10,16 +10,16 @@
       <html:button id="zsr10-ranks">更新分区指标</html:button>
     </html:div>
     <html:p id="zsr10-operation-status" role="status"></html:p>
-    <description>先在 Zotero 主窗口选中文献，点击即可更新。元数据整理与分区更新分开执行，不再提供额外的预览、覆盖、备份或恢复步骤。</description>
-    <description>根据 DOI 更新仅手动触发：联网查询题目、作者、期刊、日期等文献信息，成功返回的非空字段直接覆盖旧值；查询失败、DOI 不一致或未返回的字段保持原样。不改附件、笔记、标签、Extra 和索书号。</description>
-    <description>更新分区指标会直接替换选中条目的索书号；没有匹配数据时保留原值。误操作可用 Zotero 自带撤销。</description>
+    <description>先在主窗口选中文献，再点击对应操作。元数据整理与分区更新分开执行。</description>
+    <description>根据 DOI 更新仅手动执行，返回的文献信息直接覆盖旧值；未返回或查询失败的内容保持原样，不改附件、笔记和索书号。</description>
+    <description>分区指标直接写入索书号，未匹配时保留原值。支持 Zotero 原生撤销。</description>
   </groupbox>
   <groupbox>
     <label><html:h3>自动处理</html:h3></label>
     <html:label style="margin:8px 0"><html:input id="zsr10-metadata-auto" type="checkbox"/> 新增条目时自动整理元数据</html:label>
     <html:label style="margin:8px 0"><html:input id="zsr10-auto-new" type="checkbox"/> 新增条目时自动更新分区指标</html:label>
     <html:p id="zsr10-auto-status" role="status"></html:p>
-    <description>开关即时保存，默认关闭，只处理之后新增的期刊/会议条目。两者都开启时先整理再匹配指标。自动模式仅填充空索书号；已有条目可点击“更新分区指标”直接覆盖。</description>
+    <description>开关即时保存，默认关闭。两者都开启时先整理再更新指标；自动模式仅填空索书号，手动更新可覆盖已有值。</description>
     <description>自动处理不联网查询 DOI，也不自动下载年度指标表。</description>
   </groupbox>
   <groupbox>
@@ -41,7 +41,7 @@
     <html:p id="zsr10-version-summary" style="white-space:pre-wrap;line-height:1.6"></html:p>
     <html:button id="zsr10-import">导入指标 JSON 数据包…</html:button>
     <html:p id="zsr10-load-warning" style="white-space:pre-wrap;color:#a33"></html:p>
-    <description>公开版不含第三方指标表，请导入有权使用的数据。年份以本地数据为准；中科院仅使用 2025 升级版大类分区，不读取新锐 XR 数据。会议只匹配 CCF 等级。</description>
+    <description>已内置 CCF、JCR 和中科院指标表，导入用于后续更新。中科院使用 2025 升级版大类分区，不使用新锐分区；会议只显示 CCF 等级。</description>
     <description>与 Linter 共存时，请关闭其“清理被滥用的标准字段”；使用本插件自动整理后，也请停用 Linter 中重复的自动整理功能。</description>
   </groupbox>
 </vbox>

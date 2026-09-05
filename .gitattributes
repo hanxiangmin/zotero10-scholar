@@ -10,3 +10,4 @@
 *.yml text eol=lf
 *.xpi binary
 *.zip binary
+*.png binary
