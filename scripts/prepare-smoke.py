@@ -175,7 +175,7 @@ def prepare(product: Path, executable: Path, *, auto_close: bool = False) -> dic
         "autoClose": bool(auto_close),
         "note": (
             "Not launched. After saving its report, only this new isolated instance will request a normal quit. "
-            if auto_close else "Not launched. Runtime tests leave their final preview open for inspection. "
+            if auto_close else "Not launched. Runtime tests leave this isolated instance available for inspection. "
         ) + "Synthetic items are retained; prepare a new directory to rerun.",
     }
     write_json(session / "launch.json", launch)

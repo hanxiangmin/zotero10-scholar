@@ -2,7 +2,6 @@
 (function (root) {
   "use strict";
   const MISSING = "—";
-  const STATE_PREFIX = "Zotero Scholar Rank: ";
   const EXCLUDED_CONFERENCE = /\b(workshops?|findings|short\s+papers?|demo(?:nstration)?s?|technical\s+briefs?|companion|posters?|doctoral\s+(?:consortium|symposium)|extended\s+abstracts?)\b/i;
 
   function normalizeTitle(value) {
@@ -195,86 +194,18 @@
     }
   }
 
-  function readState(extra) {
-    const lines = String(extra || "").split(/\r?\n/).filter(l => l.startsWith(STATE_PREFIX));
-    if (!lines.length) return { state: null, corrupt: false };
-    if (lines.length !== 1) return { state: null, corrupt: true };
-    try {
-      const state = JSON.parse(lines[0].slice(STATE_PREFIX.length));
-      assert(state.v === 1 && typeof state.original === "string" && typeof state.last === "string", "Invalid state");
-      return { state, corrupt: false };
-    } catch (_) { return { state: null, corrupt: true }; }
-  }
-
-  function writeState(extra, state) {
-    const text = String(extra || "");
-    const line = STATE_PREFIX + JSON.stringify(state);
-    if (readState(text).state) return text.replace(/^Zotero Scholar Rank: [^\r\n]*/m, () => line);
-    return text + (text && !text.endsWith("\n") ? "\n" : "") + line;
-  }
-
-  function removeState(extra, state) {
-    const text = String(extra || "");
-    const match = /^Zotero Scholar Rank: [^\r\n]*/m.exec(text);
-    if (!match) return text;
-    let start = match.index;
-    if (state.addedSeparator && start > 0 && text[start - 1] === "\n") start -= 1;
-    return text.slice(0, start) + text.slice(match.index + match[0].length);
-  }
-
-  function planUpdate(item, result, {
-    allowOverwrite = false, repairCleared = false, now = new Date().toISOString()
-  } = {}) {
+  // Explicit updates replace the current value. Automatic new-item processing
+  // only fills an empty field. Neither path reads or writes Extra.
+  function planUpdate(item, result, { allowOverwrite = true } = {}) {
     if (!result.supported) return { action: "skip", reason: "unsupported-type" };
-    const { state, corrupt } = readState(item.extra);
-    if (corrupt) return { action: "skip", reason: "invalid-backup" };
+    if (!result.hasData || !result.text) return { action: "skip", reason: "no-data" };
     const current = String(item.callNumber || "");
-    // A metadata linter may clear callNumber while leaving our exact state in
-    // Extra. Only an explicit user action may repair that empty field; normal
-    // refreshes still protect every non-empty manual edit.
-    const mayRepairCleared = Boolean(state && repairCleared && !current && state.last
-      && (result.text === state.last || allowOverwrite));
-    if (state && state.last !== current && !mayRepairCleared) {
-      return { action: "skip", reason: "manually-edited" };
-    }
-    // A public build may have no bundled catalogs. Missing source packages must
-    // not be mistaken for a venue changing to one with no matching metrics.
-    if (state && Array.isArray(result.availableKinds)
-      && (!result.availableKinds.length || Object.keys(state.provenance || {}).some(kind => !result.availableKinds.includes(kind)))) {
-      return { action: "skip", reason: "data-unavailable" };
-    }
-    // A public build can load an older local JCR package that a previous
-    // personal build rejected. Check the loaded year even for unmatched titles.
-    const previousJCRYear = state?.provenance?.jcr?.metricYear;
-    if (Number.isInteger(previousJCRYear) && Number.isInteger(result.jcrMetricYear)
-      && result.jcrMetricYear < previousJCRYear) {
-      return { action: "skip", reason: "outdated-data" };
-    }
-    // A changed venue must not retain the previous venue's derived metrics.
-    // Only clear results that this plugin owns; unknown new items stay untouched.
-    if (!result.hasData && !state) return { action: "skip", reason: "no-data" };
-    if (!state && current && !allowOverwrite) return { action: "skip", reason: "existing-call-number" };
-    const next = {
-      v: 1, original: state ? state.original : current, last: result.text,
-      addedSeparator: state ? state.addedSeparator : Boolean(item.extra && !item.extra.endsWith("\n")),
-      updatedAt: now, provenance: result.provenance, quartilePolicy: result.policy
-    };
-    // Avoid touching dateModified and the sync queue on repeated refreshes.
-    if (state && current === next.last && JSON.stringify(state.provenance) === JSON.stringify(next.provenance) && state.quartilePolicy === next.quartilePolicy) {
-      return { action: "skip", reason: "unchanged" };
-    }
-    return { action: "write", callNumber: result.text, extra: writeState(item.extra, next) };
+    if (current === result.text) return { action: "skip", reason: "unchanged" };
+    if (current && !allowOverwrite) return { action: "skip", reason: "existing-call-number" };
+    return { action: "write", callNumber: result.text };
   }
 
-  function planRestore(item) {
-    const { state, corrupt } = readState(item.extra);
-    if (corrupt) return { action: "skip", reason: "invalid-backup" };
-    if (!state) return { action: "skip", reason: "no-backup" };
-    if (String(item.callNumber || "") !== state.last) return { action: "skip", reason: "manually-edited" };
-    return { action: "write", callNumber: state.original, extra: removeState(item.extra, state) };
-  }
-
-  const api = { Catalog, validateDataset, normalizeTitle, normalizeISSNs, selectQuartile, readState, planUpdate, planRestore, STATE_PREFIX };
+  const api = { Catalog, validateDataset, normalizeTitle, normalizeISSNs, selectQuartile, planUpdate };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScholarCore = api;
 })(globalThis);

@@ -46,10 +46,10 @@ function fixtureDatasets() {
   };
 }
 
-async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } = {}) {
+async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), fastTimeout = false } = {}) {
   const state = {
     items: new Map(), persisted: new Map(), alerts: [], errors: [], saveIDs: [], reloadIDs: [],
-    commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
+    doiResponses: new Map(), doiLookups: [], commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
     transactionGate: null, pickerQueue: [], inputFiles: new Map(),
     outputFiles: new Map([...localFiles].map(([filename, data]) => [filename, structuredClone(data)])),
     writes: [], beforeWrite: null, autoNew: true, resourceReads: [], localReads: [],
@@ -111,7 +111,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     },
     Prefs: {
       get: key => key.endsWith("autoNew") ? state.autoNew : key.endsWith("quartilePolicy") ? "best" : state.preferences[key.replace("extensions.zotero10scholar.", "")],
-      set: (key, value) => { state.preferences[key.replace("extensions.zotero10scholar.", "")] = value; }
+      set: (key, value) => { if (key.endsWith("autoNew")) state.autoNew=value; else state.preferences[key.replace("extensions.zotero10scholar.", "")] = value; }
     },
     Promise: { delay: async () => {} },
     Items: {
@@ -119,6 +119,18 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
       loadDataTypes: async () => {},
       getAll: async libraryID => [...state.items.values()].filter(item => item.libraryID === libraryID && !item.deleted)
     },
+    Translate: { Search: class {
+      setIdentifier(identifier) { assert.deepEqual(Object.keys(identifier), ["DOI"]); this.doi=identifier.DOI; state.doiLookups.push(this.doi); }
+      async getTranslators() { return [{translatorID:"synthetic-test-translator"}]; }
+      setTranslator(translators) { assert.equal(translators.length,1); }
+      async translate(options) {
+        assert.equal(options.libraryID,false); assert.equal(options.saveAttachments,false);
+        const value=state.doiResponses.get(this.doi);
+        if (value instanceof Error) throw value;
+        return await value || [];
+      }
+    } },
+    CreatorTypes: { getID: name => name, isValidForItemType: name => ["author","editor","contributor","translator"].includes(name) },
     ItemFields: { getID: name => name, isValidForType: () => true },
     UndoHistory: { stageAction: (action, args) => state.undoActions.push({ action, args }) },
     logError: error => state.errors.push(error),
@@ -155,7 +167,8 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     }
   };
   const scope = {
-    ScholarCore: Core, ScholarMetadata: Metadata, Zotero, IOUtils,
+    ScholarCore: Core, ScholarMetadata: Metadata, Zotero, IOUtils, clearTimeout,
+    setTimeout: (callback, ms) => setTimeout(callback, fastTimeout && ms === 45000 ? 1 : ms),
     PathUtils: { join: (...parts) => parts.join("/") },
     ChromeUtils: { importESModule: () => ({ FilePicker }) },
     Services: { prompt: { alert: (_, __, text) => state.alerts.push(text), confirm: () => true } }
@@ -166,12 +179,14 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
   await plugin.start({ id: "test@mock.invalid", version: "1", rootURI: "jar:file:///MOCK/extensions/test@mock.invalid.xpi!/" });
 
   function item(id, values = {}) {
-    const fields = { title: `Paper ${id}`, publicationTitle: PAMI, ISSN: "0162-8828", callNumber: "", extra: "User note", ...values };
+    const fields = { creators: [], title: `Paper ${id}`, publicationTitle: PAMI, ISSN: "0162-8828", callNumber: "", extra: "User note", ...values };
     const object = {
       id, key: `ITEM${id}`, libraryID: 1, itemType: "journalArticle", itemTypeID: 1,
       library: { libraryType: "user" }, deleted: false, isFeedItem: false,
       fields, saveEntered: deferred(), saveGate: null, saveError: null,
       isRegularItem: () => true, isEditable: () => true,
+      getCreatorsJSON: () => structuredClone(fields.creators),
+      setCreators: values => { fields.creators=structuredClone(values); },
       getField: name => fields[name] || "",
       setField: (name, value) => { fields[name] = value; },
       async save() {
@@ -194,115 +209,6 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
   return { plugin, state, item };
 }
 
-function mockWindow() {
-  return { openDialog(_url, _name, _features, data) {
-    return { arguments: [data], closed: false, addEventListener() {}, removeEventListener() {}, close() { this.closed = true; } };
-  } };
-}
-
-test("metadata menu previews changes and selected approval saves metadata plus ranks once", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(300, { title: "BRCA1  and p53 in a study", DOI: "doi:10.1234/test", volume: "001", language: "en" });
-  const other = item(301, { DOI: "doi:10.1234/other" });
-  const untouched = { ...other.fields };
-  const menu = state.menuConfigs.get("scholar-items").menus[0].menus.find(m => m.l10nID === "zsr10-metadata");
-  const window = mockWindow();
-  menu.onCommand(null, { items: [record, other], menuElem: { ownerGlobal: window } });
-  await tick();
-  const dialog = [...plugin.dialogs][0];
-  assert.ok(dialog);
-  assert.equal(state.saveIDs.length, 0);
-  const data = dialog.arguments[0];
-  assert.ok(data.rows[0].fields.some(f => f.name === "DOI" && f.after === "10.1234/test"));
-  assert.equal((await data.apply([record.id])).written, 1);
-  assert.equal(record.fields.title, "BRCA1 and p53 in a study");
-  assert.equal(record.fields.callNumber, "A|20.4|Q1|1区TOP");
-  assert.ok(Metadata.readState(record.fields.extra).state);
-  assert.ok(Core.readState(record.fields.extra).state);
-  assert.equal(state.saveIDs.length, 1);
-  assert.deepEqual(other.fields, untouched);
-  await assert.rejects(data.apply([other.id]), /已经应用/);
-});
-
-test("a reviewed metadata plan cannot overwrite a later edit or newly read-only item", async () => {
-  const { plugin, item } = await harness();
-  const record = item(302, { DOI: "doi:10.1234/test" });
-  const dialog = await plugin.previewMetadata([record], { win: mockWindow() });
-  record.fields.DOI = "manual correction";
-  const counts = await dialog.arguments[0].apply([record.id]);
-  assert.equal(counts["manually-edited"], 1);
-  assert.equal(record.fields.DOI, "manual correction");
-  assert.equal(record.fields.callNumber, "");
-  const next = await plugin.previewMetadata([record], { win: mockWindow() });
-  record.isEditable = () => false;
-  assert.equal((await next.arguments[0].apply([record.id]))["manually-edited"], 1);
-});
-
-test("reviewed plans remain exact when rules or abbreviation data change after preview", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(303, { DOI: "doi:10.1234/test" });
-  const dialog = await plugin.previewMetadata([record], { win: mockWindow() });
-  state.preferences["metadata.doi"] = false;
-  plugin.abbreviations = new Metadata.Abbreviations({schemaVersion:1,kind:"journal-abbreviations",source:"Synthetic",records:[{title:PAMI,abbreviation:"Late value"}]});
-  await dialog.arguments[0].apply([record.id]);
-  assert.equal(record.fields.DOI, "10.1234/test");
-  assert.equal(record.fields.journalAbbreviation || "", "");
-});
-
-test("metadata-only automatic imports work without rank data and keep their toggle separate", async () => {
-  const { plugin, state, item } = await harness({ builtins: {} });
-  state.autoNew = false;
-  state.preferences["metadata.auto"] = true;
-  const record = item(304, { DOI: "doi:10.1234/test", language: "en", callNumber: "My shelf" });
-  state.observer.notify("add", "item", [record.id]);
-  await plugin.pendingAuto;
-  assert.equal(record.fields.DOI, "10.1234/test");
-  assert.equal(record.fields.callNumber, "My shelf");
-  assert.equal(Core.readState(record.fields.extra).state, null);
-  state.preferences["metadata.auto"] = false;
-  const other = item(305, { DOI: "doi:10.1234/other" });
-  state.observer.notify("add", "item", [other.id]);
-  await plugin.pendingAuto;
-  assert.equal(other.fields.DOI, "doi:10.1234/other");
-});
-
-test("metadata cleanup preserves manually edited call number and can restore its own fields", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(306, { DOI: "doi:10.1234/test", volume: "002", language: "en", callNumber: "User shelf" });
-  await plugin.apply([record], { metadata: true, silent: true });
-  const extra = record.fields.extra;
-  assert.equal(record.fields.callNumber, "User shelf");
-  record.fields.DOI = "user DOI";
-  state.persisted.set(record.id, { ...record.fields });
-  const dialog = await plugin.previewMetadata([record], { restore: true, win: mockWindow() });
-  await dialog.arguments[0].apply([record.id]);
-  assert.equal(record.fields.volume, "002");
-  assert.equal(record.fields.DOI, "user DOI");
-  assert.equal(record.fields.callNumber, "User shelf");
-  assert.notEqual(record.fields.extra, extra);
-});
-
-test("failed metadata save rolls back every touched field and both backup records", async () => {
-  const { plugin, state, item } = await harness();
-  const a = item(307, { DOI: "doi:10.1234/a" }), b = item(308, { DOI: "doi:10.1234/b" });
-  const originals = [a, b].map(item => ({ ...item.fields }));
-  b.saveError = new Error("metadata save failed");
-  const dialog = await plugin.previewMetadata([a, b], { win: mockWindow() });
-  await assert.rejects(dialog.arguments[0].apply([a.id, b.id]), /metadata save failed/);
-  assert.deepEqual([a.fields, b.fields], originals);
-  assert.equal(state.rollbacks, 1);
-});
-
-test("duplicate-only preview reads the selected library without writing", async () => {
-  const { plugin, state, item } = await harness();
-  const a = item(309, { DOI: "doi:10.1234/a" }), b = item(310, { DOI: "10.1234/a" });
-  const c = item(311, { DOI: "10.1234/a" }); c.libraryID = 2;
-  const dialog = await plugin.previewMetadata([a], { duplicatesOnly: true, win: mockWindow() });
-  assert.deepEqual(Array.from(dialog.arguments[0].rows[0].duplicates, row => row.id), [b.id]);
-  assert.equal(dialog.arguments[0].rows[0].writable, false);
-  assert.equal(state.saveIDs.length, 0);
-});
-
 test("imported abbreviation tables persist across reload and malformed replacements are rejected", async () => {
   const { plugin, state, item } = await harness();
   const table = { schemaVersion: 1, kind: "journal-abbreviations", source: "Synthetic user table", records: [{ title: PAMI, abbreviation: "Fixture Abbr" }] };
@@ -317,111 +223,6 @@ test("imported abbreviation tables persist across reload and malformed replaceme
   state.inputFiles.set("/bad.json", null); state.pickerQueue.push({ file: "/bad.json" });
   await assert.rejects(plugin.importAbbreviations(), /缩写表/);
   assert.equal(plugin.abbreviations.count, 1);
-});
-
-test("metadata and rank backups restore exactly in either order", async () => {
-  for (const rankFirst of [true, false]) {
-    const { plugin, item } = await harness();
-    const record = item(313, { DOI: "doi:10.1234/test", language: "en", extra: "Citation Key: keep\n" });
-    const original = { ...record.fields };
-    await plugin.apply([record], { metadata: true, silent: true });
-    const restoreMetadata = async () => {
-      const before = plugin.snapshot(record), plan = plugin.metadataPlan(before, { restore: true });
-      await plugin.applyReviewed([{ item: record, before, plan }]);
-    };
-    if (rankFirst) { await plugin.apply([record], { restore: true, silent: true }); await restoreMetadata(); }
-    else { await restoreMetadata(); await plugin.apply([record], { restore: true, silent: true }); }
-    assert.deepEqual(record.fields, original);
-  }
-});
-
-function previouslyManagedItem({ plugin, state, item }, id) {
-  const record = item(id, { callNumber: "QA76 original shelf mark", extra: "Citation Key: keep\r\nUser notes" });
-  const original = { ...record.fields };
-  const snapshot = plugin.snapshot(record);
-  const result = new Core.Catalog(Object.values(fixtureDatasets())).lookup(snapshot);
-  const plan = Core.planUpdate(snapshot, result, { allowOverwrite: true, now: "2026-08-28T01:00:00.000Z" });
-  assert.equal(plan.action, "write");
-  record.fields.callNumber = plan.callNumber;
-  record.fields.extra = plan.extra;
-  state.persisted.set(id, { ...record.fields });
-  return { record, original };
-}
-
-test("a data-free plugin starts, preserves items during refresh, and can restore an existing backup", async () => {
-  const environment = await harness({ builtins: {} });
-  const { plugin, state, item } = environment;
-  assert.equal(plugin.active, true);
-  assert.equal(plugin.catalog.list().length, 0);
-  assert.equal(state.activeMenus.size, 2);
-  assert.equal(state.activePanes.size, 1);
-  assert.ok(state.observer, "a missing dataset must not prevent normal plugin initialization");
-  assert.match(plugin.dataSummary(), /导入/);
-  for (const kind of ["CCF", "JCR", "CAS"]) {
-    assert.ok(plugin.loadWarnings.some(warning => warning.startsWith(kind)), `${kind} should explain its missing data`);
-  }
-
-  const fresh = item(40);
-  const freshBefore = { ...fresh.fields };
-  const { record: managed, original } = previouslyManagedItem(environment, 41);
-  const managedBefore = { ...managed.fields };
-  const counts = await plugin.apply([fresh, managed], { silent: true });
-  assert.equal(counts["no-data"], 1);
-  assert.equal(counts["data-unavailable"], 1);
-  assert.equal(state.saveIDs.length, 0);
-  assert.deepEqual(fresh.fields, freshBefore);
-  assert.deepEqual(managed.fields, managedBefore);
-
-  const restored = await plugin.apply([managed], { restore: true, silent: true });
-  assert.equal(restored.written, 1);
-  assert.deepEqual(managed.fields, original);
-  await plugin.stop();
-  assert.equal(state.activeMenus.size, 0);
-  assert.equal(state.activePanes.size, 0);
-  assert.equal(state.observer, null);
-});
-
-test("a data-free plugin imports local packages, resumes protected updates, and reloads overrides in a new VM", async () => {
-  const environment = await harness({ builtins: {} });
-  const { plugin, state } = environment;
-  const { record, original } = previouslyManagedItem(environment, 42);
-  const packages = fixtureDatasets();
-  packages["jcr-2025.json"].records[0].jif = 21.1;
-
-  for (const [index, filename] of ["jcr-2025.json", "ccf-2026.json", "cas-2025.json"].entries()) {
-    const data = packages[filename];
-    const inputPath = `user-import-${data.kind}.json`;
-    state.inputFiles.set(inputPath, data);
-    state.pickerQueue.push({ file: inputPath });
-    await plugin.importDataset({});
-    assert.equal(plugin.catalog.list().length, index + 1);
-    assert.equal(state.saveIDs.length, 0, "importing data must not itself change library items");
-    assert.equal(plugin.loadWarnings.some(warning => warning.startsWith(data.kind.toUpperCase())), false,
-      "a successful import must clear that dataset's missing-data warning");
-    if (index < 2) {
-      const counts = await plugin.apply([record], { silent: true });
-      assert.equal(counts["data-unavailable"], 1);
-      assert.equal(state.saveIDs.length, 0, "partial imports cannot remove metrics from a previously complete result");
-    }
-  }
-  assert.equal(state.outputFiles.size, 3);
-  assert.equal(plugin.loadWarnings.length, 0);
-  const refreshed = await plugin.apply([record], { silent: true });
-  assert.equal(refreshed.written, 1);
-  assert.equal(record.fields.callNumber, "A|21.1|Q1|1区TOP");
-  assert.equal(Core.readState(record.fields.extra).state.original, original.callNumber);
-  assert.equal((await plugin.apply([record], { silent: true })).unchanged, 1);
-  await plugin.stop();
-
-  const restarted = await harness({ builtins: {}, localFiles: state.outputFiles });
-  const nextItem = restarted.item(43);
-  assert.equal(restarted.plugin.catalog.list().length, 3);
-  assert.equal(restarted.plugin.catalog.lookup(restarted.plugin.snapshot(nextItem)).text, "A|21.1|Q1|1区TOP");
-  assert.equal(restarted.state.localReads.length, 3, "startup must read overrides independently of missing builtins");
-  assert.equal(restarted.state.writes.length, 0, "startup should only read the persisted overrides");
-  assert.equal((await restarted.plugin.apply([nextItem], { silent: true })).written, 1);
-  assert.equal(nextItem.fields.callNumber, "A|21.1|Q1|1区TOP");
-  await restarted.plugin.stop();
 });
 
 test("missing builtins do not bypass validation of local override types and CAS years", async () => {
@@ -449,25 +250,6 @@ test("startup rejects older local JCR only when a newer builtin is available", a
     assert.equal(state.writes.length, 0);
     await plugin.stop();
   }
-});
-
-test("preview remains tracked through initial about:blank unload and closes on stop", async () => {
-  const { plugin, item } = await harness();
-  let unload;
-  const previewURL = "chrome://zotero10-scholar/content/preview.xhtml";
-  const dialog = {
-    closed: false,
-    addEventListener: (type, handler) => { if (type === "unload") unload = handler; },
-    removeEventListener: (type, handler) => { if (type === "unload" && unload === handler) unload = null; },
-    close() { this.closed = true; unload?.({ target: { documentURI: previewURL } }); }
-  };
-  const win = { openDialog: url => { assert.equal(url, previewURL); return dialog; } };
-  assert.equal(plugin.preview([item(1)], win), dialog);
-  unload({ target: { documentURI: "about:blank" } });
-  assert.equal(plugin.dialogs.size, 1, "initial document navigation must not lose the window handle");
-  await plugin.stop();
-  assert.equal(dialog.closed, true);
-  assert.equal(plugin.dialogs.size, 0);
 });
 
 test("new-item automatic updates wait for a manual batch instead of being dropped", { timeout: 5000 }, async t => {
@@ -521,147 +303,6 @@ test("Zotero priority ordering leaves Scholar Rank after Format Metadata cleanup
 
   assert.deepEqual(order, ["format-metadata", "scholar-rank"]);
   assert.equal(state.persisted.get(added.id).callNumber, "A|20.4|Q1|1区TOP");
-});
-
-test("an explicit update repairs an externally cleared rank but preserves non-empty manual edits", async () => {
-  const environment = await harness();
-  const { plugin, state, item } = environment;
-  const { record } = previouslyManagedItem(environment, 7);
-  const expected = Core.readState(record.fields.extra).state.last;
-
-  record.fields.callNumber = "";
-  state.persisted.set(record.id, { ...record.fields });
-  assert.equal((await plugin.apply([record], { silent: true }))["manually-edited"], 1);
-  assert.equal(record.fields.callNumber, "");
-
-  const repaired = await plugin.apply([record], { repairCleared: true, silent: true });
-  assert.equal(repaired.written, 1);
-  assert.equal(record.fields.callNumber, expected);
-
-  record.fields.callNumber = "User shelf mark";
-  state.persisted.set(record.id, { ...record.fields });
-  assert.equal((await plugin.apply([record], { repairCleared: true, silent: true }))["manually-edited"], 1);
-  assert.equal(record.fields.callNumber, "User shelf mark");
-});
-
-test("the overwrite menu previews editable metrics and backs up an explicit approved replacement", async () => {
-  const environment = await harness();
-  const { plugin, state, item } = environment;
-  const { record } = previouslyManagedItem(environment, 9);
-  record.fields.callNumber = "";
-  state.persisted.set(record.id, { ...record.fields });
-
-  const newer = jcrDataset();
-  newer.records[0].jif = 21.1;
-  plugin.catalog.replace(newer);
-  assert.equal(plugin.catalog.lookup(plugin.snapshot(record)).text, "A|21.1|Q1|1区TOP");
-
-  const itemMenu = state.menuConfigs.get("scholar-items");
-  const overwrite = itemMenu.menus[0].menus.find(menu => menu.l10nID === "zsr10-overwrite");
-  overwrite.onCommand(null, { items: [record], menuElem: { ownerGlobal: mockWindow() } });
-  await tick();
-  assert.equal(record.fields.callNumber, "");
-  const data = [...plugin.dialogs][0].arguments[0];
-  assert.equal(data.manual, true);
-  assert.equal(data.rows[0].suggestions.callNumber, "A|21.1|Q1|1区TOP");
-  await data.apply([record.id], [{ id: record.id, fields: data.rows[0].suggestions }]);
-  assert.equal(record.fields.callNumber, "A|21.1|Q1|1区TOP");
-  assert.equal(Core.readState(record.fields.extra).state.original, "QA76 original shelf mark");
-  assert.equal(Metadata.readManual(record.fields.extra).state.fields.callNumber.original, "");
-});
-
-test("manual preview cancellation and no-op remain editable without any writes", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(400, { callNumber: "My shelf" });
-  const data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
-  assert.equal((await data.apply([record.id], [{ id: record.id, fields: { callNumber: "My shelf" } }])).unchanged, true);
-  plugin.confirmManual = () => false;
-  const edits = [{ id: record.id, fields: { callNumber: "C", language: "fr" } }];
-  assert.equal((await data.apply([record.id], edits)).cancelled, true);
-  assert.equal(state.saveIDs.length, 0);
-  assert.equal(record.fields.callNumber, "My shelf");
-  plugin.confirmManual = () => true;
-  assert.equal((await data.apply([record.id], edits)).written, 1);
-  assert.equal(record.fields.callNumber, "C");
-  assert.equal(record.fields.language, "fr");
-  await assert.rejects(data.apply([record.id], edits), /已经应用/);
-});
-
-test("manual fields survive automatic events, normal cleanup, overwrite and restore across restart", async () => {
-  const first = await harness();
-  const record = first.item(401, { DOI: "doi:10.1234/test", callNumber: "My shelf", language: "en" });
-  const before = { ...record.fields };
-  const data = (await first.plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
-  await data.apply([record.id], [{ id: record.id, fields: { callNumber: "", DOI: "doi:10.1234/manual" } }]);
-  const stored = { ...record.fields };
-  await first.plugin.stop();
-  const next = await harness();
-  const reloaded = next.item(401, stored);
-  next.state.preferences["metadata.auto"] = true;
-  next.state.observer.notify("add", "item", [reloaded.id]);
-  await next.plugin.pendingAuto;
-  assert.equal(next.state.saveIDs.length, 0);
-  assert.equal((await next.plugin.apply([reloaded], { silent: true, allowOverwrite: true, repairCleared: true }))["manual-override"], 1);
-  assert.equal((await next.plugin.apply([reloaded], { silent: true, restore: true }))["manual-override"], 1);
-  assert.deepEqual(reloaded.fields, stored);
-  const restore = (await next.plugin.previewMetadata([reloaded], { win: mockWindow(), manualRestore: true })).arguments[0];
-  await restore.apply([reloaded.id]);
-  assert.deepEqual(reloaded.fields, before);
-});
-
-test("manual approval skips stale and read-only records and cannot edit unsupported fields or foreign IDs", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(402), readonly = item(403);
-  const data = (await plugin.previewMetadata([record, readonly], { win: mockWindow(), manual: true })).arguments[0];
-  await assert.rejects(data.apply([record.id], [{ id: 999, fields: { callNumber: "C" } }]), /不一致/);
-  await assert.rejects(data.apply([record.id], [{ id: record.id, fields: { extra: "erase" } }]), /不支持/);
-  record.fields.title = "Changed after preview";
-  readonly.isEditable = () => false;
-  const counts = await data.apply([record.id, readonly.id], [record, readonly].map(item => ({id:item.id,fields:{callNumber:"C"}})));
-  assert.equal(counts["manually-edited"], 2);
-  assert.equal(state.saveIDs.length, 0);
-});
-
-test("manual batch failure rolls back overrides and backups for every item", async () => {
-  const { plugin, state, item } = await harness();
-  const records = [item(404), item(405)], originals = records.map(record => ({ ...record.fields }));
-  records[1].saveError = new Error("manual save failed");
-  const data = (await plugin.previewMetadata(records, { win: mockWindow(), manual: true })).arguments[0];
-  await assert.rejects(data.apply(records.map(record => record.id), records.map(record => ({id:record.id,fields:{callNumber:"C",language:"fr"}}))), /manual save failed/);
-  assert.equal(state.rollbacks, 1);
-  records.forEach((record, index) => assert.deepEqual(record.fields, originals[index]));
-});
-
-test("manual metric suggestions do not clear unmatched values or suggest older or incomplete source results", async () => {
-  const environment = await harness();
-  const { plugin, item } = environment;
-  const { record } = previouslyManagedItem(environment, 406);
-  plugin.catalog.replace(jcrDataset(2024));
-  let data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
-  assert.equal(data.rows[0].suggestions.callNumber, undefined);
-  plugin.catalog = new Core.Catalog([fixtureDatasets()["ccf-2026.json"]]);
-  data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
-  assert.equal(data.rows[0].suggestions.callNumber, undefined);
-  const unknown = item(407, { publicationTitle: "Unknown", ISSN: "", callNumber: "Keep" });
-  data = (await plugin.previewMetadata([unknown], { win: mockWindow(), manual: true })).arguments[0];
-  assert.equal(data.rows[0].suggestions.callNumber, undefined);
-  assert.equal(data.rows[0].fields.find(field => field.name === "callNumber").after, "Keep");
-});
-
-test("management uses the live main-window selection and rank-only review does not clean metadata", async () => {
-  const { plugin, state, item } = await harness();
-  const record = item(408, { DOI: "doi:10.1234/test" });
-  let selected = [];
-  plugin.window = () => ({ ZoteroPane: { getSelectedItems: () => selected } });
-  await plugin.manageSelected("manual", mockWindow());
-  assert.equal(state.alerts.length, 1);
-  selected = [record];
-  const data = (await plugin.manageSelected("ranks", mockWindow())).arguments[0];
-  assert.equal(data.rows[0].fields.length, 1);
-  assert.equal(data.rows[0].fields[0].name, "callNumber");
-  await data.apply([record.id]);
-  assert.equal(record.fields.DOI, "doi:10.1234/test");
-  assert.equal(record.fields.callNumber, "A|20.4|Q1|1区TOP");
 });
 
 test("stop waits for an in-flight last save and rolls the transaction back", { timeout: 5000 }, async t => {
@@ -773,4 +414,138 @@ test("an import dialog completed after stop cannot write a local override", { ti
 
   assert.equal(state.writes.length, 0);
   assert.equal(plugin.catalog.indexes.jcr.dataset.metricYear, 2025);
+});
+
+test("three menu actions directly clean metadata, query DOI, or update ranks", async () => {
+  const {plugin,state,item}=await harness();
+  const menus=state.menuConfigs.get("scholar-items").menus[0].menus;
+  assert.deepEqual(Array.from(menus,m=>m.l10nID),["zsr10-metadata","zsr10-doi","zsr10-update"]);
+  const record=item(100,{DOI:"doi:10.1234/x",callNumber:"Old",extra:"Existing note"});
+  menus[0].onCommand(null,{items:[record],menuElem:{ownerGlobal:{}}}); await tick();
+  if (plugin.currentOperation) await plugin.currentOperation;
+  assert.equal(record.fields.DOI,"10.1234/x"); assert.equal(record.fields.callNumber,"Old");
+  menus[2].onCommand(null,{items:[record],menuElem:{ownerGlobal:{}}}); await tick();
+  if (plugin.currentOperation) await plugin.currentOperation;
+  assert.equal(record.fields.callNumber,"A|20.4|Q1|1区TOP"); assert.equal(record.fields.extra,"Existing note");
+  assert.equal(state.doiLookups.length,0);
+});
+
+test("manual rank update overwrites old locks without changing historical Extra records", async () => {
+  const {plugin,state,item}=await harness();
+  for (const [index,extra] of ['User note','Zotero Scholar Rank: {bad','Zotero Scholar Manual: {"v":1,"fields":{"callNumber":{"original":"A","last":"C"}}}'].entries()) {
+    const record=item(110+index,{callNumber:"C",extra});
+    assert.equal((await plugin.apply([record],{silent:true})).written,1);
+    assert.equal(record.fields.extra,extra);
+    assert.equal((await plugin.apply([record],{silent:true})).unchanged,1);
+  }
+  assert.equal(state.undoActions.length,3);
+});
+
+test("automatic modes remain independent and never query DOI or overwrite existing call numbers", async () => {
+  const {plugin,state,item}=await harness();
+  for (const [index,autoMetadata,autoRanks] of [[0,false,false],[1,true,false],[2,false,true],[3,true,true]]) {
+    state.preferences["metadata.auto"]=autoMetadata; state.autoNew=autoRanks;
+    const record=item(120+index,{DOI:"doi:10.1234/x"});
+    state.observer.notify("add","item",[record.id]); await plugin.pendingAuto;
+    assert.equal(record.fields.DOI,autoMetadata?"10.1234/x":"doi:10.1234/x");
+    assert.equal(record.fields.callNumber,autoRanks?"A|20.4|Q1|1区TOP":"");
+    assert.equal(record.fields.extra,"User note");
+  }
+  const existing=item(124,{callNumber:"My shelf",DOI:"doi:10.1234/x"});
+  state.observer.notify("add","item",[existing.id]); await plugin.pendingAuto;
+  assert.equal(existing.fields.callNumber,"My shelf");
+  state.observer.notify("modify","item",[existing.id]); await plugin.pendingAuto;
+  assert.equal(state.doiLookups.length,0);
+});
+
+test("missing catalogs and unknown venues preserve existing fields", async () => {
+  const {plugin,state,item}=await harness({builtins:{}});
+  const record=item(130,{callNumber:"C",DOI:"doi:10.1234/x"}),before={...record.fields};
+  assert.equal((await plugin.apply([record],{silent:true}))["no-data"],1);
+  assert.deepEqual(record.fields,before);
+  assert.equal((await plugin.apply([record],{silent:true,metadata:true})).written,1);
+  assert.equal(record.fields.DOI,"10.1234/x"); assert.equal(record.fields.callNumber,"C");
+  state.pickerQueue.push({file:"jcr.json"}); state.inputFiles.set("jcr.json",jcrDataset());
+  await plugin.importDataset({}); await plugin.apply([record],{silent:true});
+  assert.equal(record.fields.callNumber,"20.4|Q1");
+});
+
+test("management always uses main-window selection and has no hidden restore or manual-edit modes", async () => {
+  const {plugin,state,item}=await harness(); const record=item(140,{DOI:"doi:10.1234/x"}); let selected=[];
+  plugin.window=()=>({ZoteroPane:{getSelectedItems:()=>selected}});
+  await plugin.manageSelected("ranks",{}); assert.equal(state.alerts.length,1);
+  selected=[record]; await plugin.manageSelected("metadata",{});
+  assert.equal(record.fields.DOI,"10.1234/x"); assert.equal(record.fields.callNumber,"");
+  await assert.rejects(plugin.manageSelected("restoreManual",{}),/未知/);
+});
+
+const remote = (DOI, overrides={}) => ({itemType:"journalArticle",DOI,title:"A returned paper title",publicationTitle:PAMI,date:"2025",creators:[{creatorType:"author",firstName:"New",lastName:"Author"}],...overrides});
+
+test("manual DOI command uses the non-saving native API, updates in place, and caches duplicate DOI queries", async () => {
+  const {plugin,state,item}=await harness();
+  const records=[item(150,{DOI:"doi:10.1234/x",callNumber:"C",pages:"Keep pages"}),item(151,{DOI:"10.1234/X",callNumber:"C"})];
+  state.doiResponses.set("10.1234/x",[remote("10.1234/x",{extra:"Do not import",callNumber:"A",attachments:[{}],tags:["no"]})]);
+  const menus=state.menuConfigs.get("scholar-items").menus[0].menus;
+  menus[1].onCommand(null,{items:records,menuElem:{ownerGlobal:{}}}); await tick();
+  if (plugin.currentOperation) await plugin.currentOperation;
+  assert.deepEqual(state.doiLookups,["10.1234/x"]);
+  assert.equal(state.items.size,2); assert.equal(state.saveIDs.length,2);
+  for (const record of records) {
+    assert.equal(record.fields.title,"A returned paper title"); assert.equal(record.fields.callNumber,"C");
+    assert.equal(record.fields.extra,"User note"); assert.equal(record.fields.date,"2025");
+    assert.equal(record.fields.creators[0].lastName,"Author");
+    assert.equal(record.fields.tags,undefined); assert.equal(record.fields.attachments,undefined);
+  }
+  assert.equal(records[0].fields.pages,"Keep pages");
+  assert.equal((await plugin.updateByDOI(records,{silent:true})).unchanged,2);
+});
+
+test("DOI failures, invalid identifiers, ambiguous responses, and read-only items are skipped independently", async () => {
+  const {plugin,state,item}=await harness();
+  const records=[item(160,{DOI:""}),item(161,{DOI:"10.1234/fail"}),item(162,{DOI:"10.1234/ambiguous"}),item(163,{DOI:"10.1234/readonly"}),item(164,{DOI:"10.1234/good"})];
+  records[3].isEditable=()=>false;
+  state.doiResponses.set("10.1234/fail",new Error("network failure"));
+  state.doiResponses.set("10.1234/ambiguous",[remote("10.1234/ambiguous"),remote("10.1234/ambiguous")]);
+  state.doiResponses.set("10.1234/good",[remote("10.1234/good")]);
+  const before=records.map(record=>structuredClone(record.fields));
+  const counts=await plugin.updateByDOI(records,{silent:true});
+  assert.equal(counts.written,1); assert.equal(counts["invalid-doi"],1); assert.equal(counts["lookup-failed"],1); assert.equal(counts["doi-mismatch"],1); assert.equal(counts["read-only"],1);
+  for(let i=0;i<4;i++) assert.deepEqual(records[i].fields,before[i]);
+  assert.equal(state.doiLookups.includes("10.1234/readonly"),false);
+});
+
+test("DOI response cannot overwrite a user edit made while the request was pending", async () => {
+  const {plugin,state,item}=await harness(); const record=item(170,{DOI:"10.1234/x"}),gate=deferred();
+  state.doiResponses.set("10.1234/x",gate.promise);
+  const update=plugin.updateByDOI([record],{silent:true}); await tick();
+  record.fields.creators=[{creatorType:"author",name:"User correction"}];
+  gate.resolve([remote("10.1234/x")]);
+  assert.equal((await update)["manually-edited"],1); assert.equal(state.saveIDs.length,0);
+});
+
+test("disabling during a pending DOI lookup prevents later writes", async () => {
+  const {plugin,state,item}=await harness(); const record=item(171,{DOI:"10.1234/x"}),gate=deferred();
+  state.doiResponses.set("10.1234/x",gate.promise);
+  const update=plugin.updateByDOI([record],{silent:true}); await tick();
+  const stop=plugin.stop(); gate.resolve([remote("10.1234/x")]); await update; await stop;
+  assert.equal(state.saveIDs.length,0); assert.equal(plugin.active,false);
+});
+
+test("failed DOI batch rolls back both changed authors and fields", async () => {
+  const {plugin,state,item}=await harness(); const records=[item(180,{DOI:"10.1234/x"}),item(181,{DOI:"10.1234/y"})];
+  for (const record of records) state.doiResponses.set(record.fields.DOI,[remote(record.fields.DOI)]);
+  const before=records.map(record=>structuredClone(record.fields)); records[1].saveError=new Error("failed DOI save");
+  await assert.rejects(plugin.updateByDOI(records,{silent:true}),/failed DOI save/);
+  records.forEach((record,index)=>assert.deepEqual(record.fields,before[index])); assert.equal(state.rollbacks,1);
+});
+
+test("a timed-out native DOI query cannot write when the late response eventually arrives", async () => {
+  const {plugin,state,item}=await harness({fastTimeout:true});
+  const record=item(190,{DOI:"10.1234/late"}),gate=deferred();
+  state.doiResponses.set("10.1234/late",gate.promise);
+  const before=structuredClone(record.fields);
+  assert.equal((await plugin.updateByDOI([record],{silent:true}))["lookup-failed"],1);
+  gate.resolve([remote("10.1234/late")]); await tick();
+  assert.equal(state.saveIDs.length,0); assert.deepEqual(record.fields,before);
+  assert.equal(plugin.busy,false);
 });

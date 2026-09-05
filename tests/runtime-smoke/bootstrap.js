@@ -14,7 +14,6 @@ const PRODUCT_ID = "zotero10-scholar@local";
 const MARKER_KIND = "zotero10-scholar-isolated-smoke-v1";
 const MARKER_NAME = "SCHOLAR_SMOKE_TEST_ONLY.json";
 const REPORT_NAME = "runtime-report.json";
-const BACKUP_PREFIX = "Zotero Scholar Rank: ";
 
 function install() {}
 function uninstall() {}
@@ -48,7 +47,9 @@ function check(condition, message) {
 }
 
 function same(actual, expected, label) {
-  check(JSON.stringify(actual) === JSON.stringify(expected),
+  const canonicalize = value => Array.isArray(value) ? value.map(canonicalize)
+    : value && typeof value === "object" ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonicalize(value[key])])) : value;
+  check(JSON.stringify(canonicalize(actual)) === JSON.stringify(canonicalize(expected)),
     `${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
@@ -183,49 +184,15 @@ async function step(name, action, fatal = false) {
   return entry;
 }
 
-async function saved(item) {
-  await item.reload(null, true);
-  return {
-    id: item.id, key: item.key, type: item.itemType, title: item.getField("title"),
-    callNumber: String(item.getField("callNumber") || ""), extra: String(item.getField("extra") || ""),
-    dateModified: item.getField("dateModified")
-  };
-}
-
-function fieldPair(snapshot) {
-  return { callNumber: snapshot.callNumber, extra: snapshot.extra };
-}
-
-function backup(snapshot) {
-  const lines = snapshot.extra.split(/\r?\n/).filter(line => line.startsWith(BACKUP_PREFIX));
-  check(lines.length === 1, "Expected exactly one plugin backup line");
-  const state = JSON.parse(lines[0].slice(BACKUP_PREFIX.length));
-  check(state.v === 1, "Unexpected plugin backup schema");
-  return state;
-}
-
-async function apply(plugin, items, options = {}) {
-  await guard();
-  check(plugin.active, "Product add-on is not active");
-  return plugin.apply(items, { ...options, silent: true });
-}
-
-async function previewReady(plugin, items, win) {
-  await guard();
-  const dialog = plugin.preview(items, win);
-  check(dialog && !dialog.closed, "Preview did not open a real dialog");
-  smokePreviews.add(dialog);
-  try {
-    await waitFor("rendered preview rows", () => !dialog.closed
-      && dialog.document.getElementById("rows")?.children.length === items.length, 12000);
-  } catch (error) {
-    if (!dialog.closed) dialog.close();
-    throw error;
+async function menuState(win, items, refresh = true) {
+  // Close prior synthetic popups, just as a real context-menu interaction does.
+  // Zotero retires command handlers on popuphidden, then in an idle callback.
+  for (const id of ["zotero-itemmenu", "menu_ToolsPopup"]) {
+    const popup = win.document.getElementById(id);
+    for (const nested of popup?.querySelectorAll("menupopup") || []) nested.dispatchEvent(new win.Event("popuphidden", { bubbles: true }));
+    popup?.dispatchEvent(new win.Event("popuphidden", { bubbles: true }));
   }
-  return dialog;
-}
-
-function menuState(win, items, refresh = true) {
+  await new Promise(resolve => win.requestIdleCallback(resolve, { timeout: 1000 }));
   const targets = [["main/library/item", "zotero-itemmenu"], ["main/menubar/tools", "menu_ToolsPopup"]];
   const registrations = [];
   for (const [target, popupID] of targets) {
@@ -242,11 +209,25 @@ function menuState(win, items, refresh = true) {
       });
     }
   }
+  // Nested commands are built lazily when the submenu opens, not when the
+  // parent library popup is refreshed.
+  if (refresh) {
+    const submenu = win.document.querySelector('[data-l10n-id="zsr10-menu"] menupopup');
+    submenu?.dispatchEvent(new win.Event("popupshowing", { bubbles: true }));
+  }
   return {
     registrations,
     itemNodes: win.document.querySelectorAll('[data-l10n-id="zsr10-menu"]').length,
     toolNodes: win.document.querySelectorAll('[data-l10n-id="zsr10-settings"]').length
   };
+}
+
+function invokeMenu(win, id) {
+  const node = win.document.querySelector(`[data-l10n-id="${id}"]`);
+  check(node && !node.disabled, "Missing or disabled command: " + id);
+  // doCommand() requires an actually open native popup. Dispatch the same
+  // command event to the real DOM listener in this hidden integration run.
+  node.dispatchEvent(new win.Event("command", { bubbles: true }));
 }
 
 function syntheticVenues() {
@@ -255,31 +236,6 @@ function syntheticVenues() {
     journal: "Fictional Journal of Scholar Smoke Tests " + suffix,
     conference: "Fictional Scholar Smoke Conference " + suffix
   };
-}
-
-function syntheticOriginal() {
-  return { callNumber: "SMOKE-ORIGINAL-SHELF-001", extra: "Fictional ownership fixture; not scientific evidence.\nCitation Key: smokePublic" };
-}
-
-function publicFixtureDefinitions() {
-  const venues = syntheticVenues();
-  const original = syntheticOriginal();
-  const oldText = "B|9.9|Q1|2区";
-  const state = {
-    v: 1, original: original.callNumber, last: oldText, addedSeparator: true,
-    updatedAt: smokeConfig.preparedAt, quartilePolicy: "best",
-    provenance: Object.fromEntries(["ccf", "jcr", "cas"].map(kind => [kind, {
-      source: "SYNTHETIC previous-version smoke fixture; not actual ranking data"
-    }]))
-  };
-  return [
-    ["journal", "journalArticle", { title: "[隔离测试·纯合成] 无数据期刊", publicationTitle: venues.journal, extra: "Fictional venue and test-only metrics." }],
-    ["protected", "journalArticle", { title: "[隔离测试·纯合成] 原索书号不改", publicationTitle: venues.journal, callNumber: "SMOKE-UNMANAGED-SHELF", extra: "User-owned synthetic shelf fixture." }],
-    ["conference", "conferencePaper", { title: "[隔离测试·纯合成] 虚构正式会议", conferenceName: venues.conference, proceedingsTitle: "Proceedings of " + venues.conference, extra: "Fictional conference, not an actual CCF entry." }],
-    ["unknown", "journalArticle", { title: "[隔离测试·纯合成] 始终未匹配", publicationTitle: "Unlisted Fictional Journal " + smokeConfig.token.slice(0, 12), extra: "Unknown synthetic venue; keep unchanged." }],
-    ["workshop", "conferencePaper", { title: "[隔离测试·纯合成] 虚构Workshop", conferenceName: venues.conference, proceedingsTitle: venues.conference + " Workshops", extra: "Synthetic ancillary track; never borrow the parent rank." }],
-    ["managed", "journalArticle", { title: "[隔离测试·纯合成] 缺少数据保护旧结果", publicationTitle: venues.journal, callNumber: oldText, extra: original.extra + "\n" + BACKUP_PREFIX + JSON.stringify(state) }]
-  ];
 }
 
 function syntheticDatasets() {
@@ -340,530 +296,153 @@ async function runSmoke(rootURI) {
       check(plugin.dataSummary().includes("导入"), "Empty catalog must explain how to import data");
     }
     check(plugin.pref("autoNew") === false, "Automatic updates must stay disabled for deterministic tests");
-    const menus = menuState(win, []);
+    const menus = await menuState(win, []);
     same(menus.registrations.length, 2, "Startup menu registrations");
     same([menus.itemNodes, menus.toolNodes], [1, 1], "Startup menu DOM instances");
     return { rootURI: productAddon.getResourceURI().spec, datasets: plugin.catalog.list(),
       warnings: [...plugin.loadWarnings], menuIDs: [...plugin.menuIDs], menus };
   }, true);
 
-  await step("create-isolated-synthetic-items", async () => {
-    const journal = {
-      publicationTitle: "IEEE Transactions on Pattern Analysis and Machine Intelligence",
-      journalAbbreviation: "TPAMI", ISSN: "0162-8828"
-    };
-    const definitions = smokeConfig.withData ? [
-      ["journal", "journalArticle", { ...journal, title: "[隔离测试] TPAMI：空索书号", extra: "Synthetic journal fixture; keep this note." }],
-      ["protected", "journalArticle", { ...journal, title: "[隔离测试] 真实索书号保护与恢复", callNumber: "QA76.9 .SMOKE-001", extra: "Shelf-owner note\nCitation Key: smokeShelf" }],
-      ["conference", "conferencePaper", { title: "[隔离测试] CVPR 正式会议论文", conferenceName: "CVPR", proceedingsTitle: "Proceedings of the 2026 IEEE/CVF Computer Vision and Pattern Recognition Conference (CVPR)", extra: "Synthetic full-paper fixture." }],
-      ["unknown", "journalArticle", { title: "[隔离测试] 未知期刊必须跳过", publicationTitle: "Journal of Isolated Scholar Smoke Tests " + smokeConfig.token.slice(0, 12), extra: "Unknown venue; keep unchanged." }],
-      ["workshop", "conferencePaper", { title: "[隔离测试] CVPR Workshop 不能记为 A", conferenceName: "CVPR", proceedingsTitle: "2026 IEEE/CVF Computer Vision and Pattern Recognition Workshops (CVPRW)", extra: "Ancillary track; keep unchanged." }],
-      ["undo", "journalArticle", { ...journal, title: "[隔离测试] Zotero 撤销与重做", extra: "Undo fixture original note." }],
-      ["manual", "journalArticle", { ...journal, title: "[隔离测试] 手动修改后的索书号保护", extra: "Manual-edit fixture original note." }]
-    ] : publicFixtureDefinitions();
+
+  const extra = "User note\r\nCitation Key: keep";
+  const metadataFields = ["title", "DOI", "publicationTitle", "pages", "volume", "issue", "language", "journalAbbreviation", "date", "callNumber", "extra"];
+  const snapshot = async item => {
+    await item.reload(null, true);
+    return { ...Object.fromEntries(metadataFields.map(field => [field, String(item.getField(field) || "")])), creators: item.getCreatorsJSON() };
+  };
+  const create = async fields => {
     await guard();
-    await Zotero.DB.executeTransaction(async () => {
-      await guard();
-      collection = new Zotero.Collection();
-      collection.libraryID = Zotero.Libraries.userLibraryID;
-      collection.name = "[隔离测试] Scholar Rank " + new Date().toISOString();
-      await collection.save();
-      for (const [name, type, fields] of definitions) {
-        const item = new Zotero.Item(type);
-        item.libraryID = Zotero.Libraries.userLibraryID;
-        for (const [field, value] of Object.entries(fields)) item.setField(field, value);
-        item.setCollections([collection.id]);
-        await item.save({ skipSelect: true });
-        fixtures[name] = item;
-      }
-    });
-    for (const [name, item] of Object.entries(fixtures)) smokeReport.fixtures[name] = await saved(item);
-    smokeReport.collection = { id: collection.id, key: collection.key, name: collection.name };
-    return { collection: smokeReport.collection, count: allItems().length };
-  }, true);
-
-  if (smokeConfig.withData) {
-  await step("preview-renders-without-writing", async () => {
-    const before = await Promise.all(allItems().map(saved));
-    const dialog = await previewReady(plugin, allItems(), win);
-    try {
-      const rows = dialog.arguments[0].rows;
-      same(rows.find(row => row.id === fixtures.journal.id).result.text, smokeConfig.expectedJournal, "TPAMI preview");
-      same(rows.find(row => row.id === fixtures.conference.id).result.text, smokeConfig.expectedConference, "CVPR preview");
-      check(rows.find(row => row.id === fixtures.workshop.id).result.hasData === false, "Workshop received a rank");
-      same(await Promise.all(allItems().map(saved)), before, "Preview must not change stored fields");
-      return { renderedRows: dialog.document.getElementById("rows").children.length,
-        ranks: Array.from(dialog.document.querySelectorAll(".rank"), element => element.textContent) };
-    } finally { dialog.close(); }
-  });
-
-  await step("bulk-apply-journal-and-conference", async () => {
-    const counts = await apply(plugin, [fixtures.journal, fixtures.conference]);
-    same(counts.written, 2, "Bulk written count");
-    const journal = await saved(fixtures.journal), conference = await saved(fixtures.conference);
-    same(journal.callNumber, smokeConfig.expectedJournal, "Persisted TPAMI rank");
-    same(conference.callNumber, smokeConfig.expectedConference, "Persisted CVPR rank");
-    same(backup(journal).original, "", "Journal blank original backup");
-    same(backup(conference).original, "", "Conference blank original backup");
-    check(journal.extra.startsWith(smokeReport.fixtures.journal.extra), "Original Extra note was not preserved");
-    return { counts, journal: fieldPair(journal), conference: fieldPair(conference) };
-  });
-
-  await step("repeated-update-is-unchanged", async () => {
-    const items = [fixtures.journal, fixtures.conference];
-    const before = await Promise.all(items.map(saved));
-    const counts = await apply(plugin, items);
-    same(counts.unchanged, 2, "Unchanged count");
-    same(counts.written || 0, 0, "Repeat writes");
-    same(await Promise.all(items.map(saved)), before, "Repeated update changes neither fields nor dateModified");
-    return { counts };
-  });
-
-  await step("upgrade-compacts-legacy-format-and-preserves-backup", async () => {
-    const current = await saved(fixtures.conference);
-    const legacy = { ...backup(current), last: "A|—|—|—" };
-    await guard();
-    fixtures.conference.setField("callNumber", legacy.last);
-    fixtures.conference.setField("extra", current.extra.replace(/^Zotero Scholar Rank: [^\r\n]*/m,
-      () => BACKUP_PREFIX + JSON.stringify(legacy)));
-    await fixtures.conference.saveTx({ skipSelect: true });
-    const counts = await apply(plugin, [fixtures.conference]);
-    same(counts.written, 1, "Legacy-format update count");
-    const compact = await saved(fixtures.conference);
-    same(compact.callNumber, smokeConfig.expectedConference, "No empty metric slots after upgrade");
-    same(backup(compact).original, legacy.original, "Upgrade preserves the first backup");
-    check(compact.extra.startsWith(smokeReport.fixtures.conference.extra), "Upgrade lost original Extra text");
-    same((await apply(plugin, [fixtures.conference])).unchanged, 1, "Compact result is idempotent");
-    same(await saved(fixtures.conference), compact, "Repeat refresh leaves stored fields unchanged");
-    same((await apply(plugin, [fixtures.conference], { restore: true })).written, 1, "Restore after upgrade");
-    same(fieldPair(await saved(fixtures.conference)), fieldPair(smokeReport.fixtures.conference),
-      "Restoring upgraded data recovers original fields");
-    same((await apply(plugin, [fixtures.conference])).written, 1, "Reapply compact result for preview");
-    return { previousText: legacy.last, compactText: compact.callNumber, original: legacy.original,
-      counts, restoreVerified: true };
-  });
-
-  await step("existing-call-number-is-protected", async () => {
-    const before = await saved(fixtures.protected);
-    const counts = await apply(plugin, [fixtures.protected]);
-    same(counts["existing-call-number"], 1, "Existing-call-number skip count");
-    same(await saved(fixtures.protected), before, "Protected item remains untouched");
-    return { counts, originalCallNumber: before.callNumber };
-  });
-
-  await step("explicit-overwrite-keeps-original-backup", async () => {
-    const counts = await apply(plugin, [fixtures.protected], { allowOverwrite: true });
-    same(counts.written, 1, "Explicit overwrite count");
-    const stored = await saved(fixtures.protected);
-    same(stored.callNumber, smokeConfig.expectedJournal, "Overwritten call number");
-    same(backup(stored).original, smokeReport.fixtures.protected.callNumber, "Original shelf number in backup");
-    check(stored.extra.startsWith(smokeReport.fixtures.protected.extra), "Original Extra content lost");
-    return { counts, backup: backup(stored) };
-  });
-
-  await step("restore-original-call-number-and-extra", async () => {
-    const counts = await apply(plugin, [fixtures.protected], { restore: true });
-    same(counts.written, 1, "Restore count");
-    same(fieldPair(await saved(fixtures.protected)), fieldPair(smokeReport.fixtures.protected), "Exact original fields after restore");
-    return { counts };
-  });
-
-  await step("zotero-undo-and-redo", async () => {
-    const before = await saved(fixtures.undo);
-    await guard();
-    Zotero.UndoHistory.clear(); // Only this isolated profile's in-memory history.
-    check(Zotero.UndoHistory.isEnabled(), "Zotero UndoHistory is disabled");
-    same((await apply(plugin, [fixtures.undo])).written, 1, "Undo fixture update");
-    const after = await saved(fixtures.undo);
-    check(Zotero.UndoHistory.canUndo(), "Plugin did not register an undo action");
-    await guard();
-    same(await Zotero.UndoHistory.undo(), true, "Zotero UndoHistory.undo result");
-    same(fieldPair(await saved(fixtures.undo)), fieldPair(before), "Undo restores persisted fields");
-    check(Zotero.UndoHistory.canRedo(), "No redo action after undo");
-    await guard();
-    same(await Zotero.UndoHistory.redo(), true, "Zotero UndoHistory.redo result");
-    same(fieldPair(await saved(fixtures.undo)), fieldPair(after), "Redo restores plugin fields and backup");
-    return { undo: true, redo: true, restoredText: after.callNumber };
-  });
-
-  await step("unknown-and-workshop-are-skipped", async () => {
-    const items = [fixtures.unknown, fixtures.workshop];
-    const before = await Promise.all(items.map(saved));
-    const result = plugin.catalog.lookup(plugin.snapshot(fixtures.workshop));
-    same(result.reasons.ccf, "excluded-conference-track", "Workshop exclusion reason");
-    const counts = await apply(plugin, items);
-    same(counts["no-data"], 2, "Unknown and workshop skip count");
-    same(counts.written || 0, 0, "No false-rank writes");
-    same(await Promise.all(items.map(saved)), before, "Skipped fixtures remain unchanged");
-    return { counts, workshopReason: result.reasons.ccf };
-  });
-
-  await step("manually-edited-result-stays-protected", async () => {
-    same((await apply(plugin, [fixtures.manual])).written, 1, "Manual-edit fixture initial update");
-    await guard();
-    fixtures.manual.setField("callNumber", "Manual shelf correction — keep me");
-    await fixtures.manual.saveTx({ skipSelect: true });
-    const before = await saved(fixtures.manual);
-    const refresh = await apply(plugin, [fixtures.manual], { allowOverwrite: true });
-    const restore = await apply(plugin, [fixtures.manual], { restore: true });
-    same(refresh["manually-edited"], 1, "Manual edit blocks overwrite");
-    same(restore["manually-edited"], 1, "Manual edit blocks restore");
-    same(await saved(fixtures.manual), before, "Manual correction remains untouched");
-    return { refresh, restore };
-  });
-  } else {
-    await step("public-empty-preview-does-not-write", async () => {
-      const before = await Promise.all(allItems().map(saved));
-      const dialog = await previewReady(plugin, allItems(), win);
-      try {
-        const rows = dialog.arguments[0].rows;
-        for (const row of rows) {
-          same(row.result.text, "", "Empty-catalog preview text");
-          check(row.result.hasData === false, "Empty catalog supplied invented metrics");
-          same(row.result.availableKinds, [], "Empty-catalog availability");
-        }
-        same(dialog.arguments[0].datasets, [], "No private data in the public preview");
-        check(dialog.arguments[0].warnings.length >= 3, "Public preview must show missing-data guidance");
-        same(await Promise.all(allItems().map(saved)), before, "Empty preview must not write items");
-        return { renderedRows: rows.length, warnings: [...dialog.arguments[0].warnings], wroteItems: false };
-      } finally { dialog.close(); }
-    });
-
-    await step("public-unmatched-items-stay-unchanged", async () => {
-      const items = allItems().filter(item => item.id !== fixtures.managed.id);
-      const before = await Promise.all(items.map(saved));
-      const counts = await apply(plugin, items, { allowOverwrite: true });
-      same(counts["no-data"], items.length, "All unmanaged items without datasets are skipped");
-      same(counts.written || 0, 0, "No empty-result writes");
-      same(await Promise.all(items.map(saved)), before, "Missing data preserves blank and nonblank original fields");
-      return { counts };
-    });
-
-    await step("public-missing-data-protects-managed-result-and-allows-restore", async () => {
-      const before = await saved(fixtures.managed);
-      same(before.callNumber, backup(before).last, "Synthetic prior-version state owns the current result");
-      const counts = await apply(plugin, [fixtures.managed], { allowOverwrite: true });
-      same(counts["data-unavailable"], 1, "Unavailable datasets preserve a managed result");
-      same(counts.written || 0, 0, "No managed-result clearing");
-      same(await saved(fixtures.managed), before, "Prior-version fields and backup are unchanged");
-      const restored = await apply(plugin, [fixtures.managed], { restore: true });
-      same(restored.written, 1, "Restore is available without datasets");
-      same(fieldPair(await saved(fixtures.managed)), syntheticOriginal(), "Exact synthetic original fields after restore");
-      return { counts, restored, oldSyntheticResult: before.callNumber, scientificData: false };
-    });
-
-    await step("public-seed-guarded-synthetic-local-overrides", async () => {
-      const context = await guard();
-      same(plugin.catalog.list(), [], "Overrides must be tested through a real reload, not injected into the catalog");
-      const storage = PathUtils.join(Zotero.DataDirectory.dir, "zotero10-scholar");
-      if (await IOUtils.exists(storage)) {
-        same(canonical(storage), context.dataDir + "/zotero10-scholar", "Existing override directory must not redirect");
-      }
-      await IOUtils.makeDirectory(storage, { ignoreExisting: true });
-      same(canonical(storage), context.dataDir + "/zotero10-scholar", "Override directory stays inside the isolated data directory");
-      same(canonical(plugin.storageDir), canonical(storage), "Product uses the isolated override directory");
-      const written = [];
+    const item = new Zotero.Item("journalArticle"); item.libraryID = Zotero.Libraries.userLibraryID;
+    for (const [name,value] of Object.entries(fields)) item.setField(name,value);
+    await item.saveTx({skipSelect:true}); return item;
+  };
+  const alerts = [], originalAlert = plugin.alert;
+  plugin.alert = message => alerts.push(message); // informational result dialogs only
+  await step("load-catalog-and-create-test-items", async () => {
+    if (!smokeConfig.withData) {
+      const empty = await create({title:"No-data protection",callNumber:"C",extra});
+      const result = await plugin.apply([empty],{silent:true}); same(result["no-data"],1,"No data leaves existing fields");
+      same(empty.getField("callNumber"),"C","No data does not clear rank");
+      await IOUtils.makeDirectory(plugin.storageDir,{ignoreExisting:true});
       for (const data of syntheticDatasets()) {
-        await guard();
-        const path = PathUtils.join(storage, data.kind + ".json");
-        const tmpPath = path + ".tmp";
-        check(!(await IOUtils.exists(path)) && !(await IOUtils.exists(tmpPath)), "Refusing to replace an existing smoke override");
-        // The parent exists and is canonical; the fixed filename and tmp file
-        // are absent, so no existing symlink/file is followed or overwritten.
-        same(canonical(storage), context.dataDir + "/zotero10-scholar", "Synthetic override parent");
-        await IOUtils.writeJSON(path, data, { tmpPath });
-        same(canonical(path), context.dataDir + "/zotero10-scholar/" + data.kind + ".json", "Written synthetic override target");
-        written.push({ kind: data.kind, path, records: data.records.length, source: data.source });
-      }
-      same(plugin.catalog.list(), [], "Writing fixture files must not bypass startup loading");
-      smokeReport.syntheticData = { scientificData: false, venues: syntheticVenues(), files: written };
-      return smokeReport.syntheticData;
-    }, true);
-  }
-
-  await step("seed-synthetic-abbreviation-table", async () => {
-    await guard();
-    await IOUtils.makeDirectory(plugin.storageDir, { ignoreExisting: true });
-    const table = { schemaVersion: 1, kind: "journal-abbreviations", source: "Synthetic smoke table, not a real journal abbreviation",
-      records: [{ title: "Fictional Journal of Metadata Smoke", abbreviation: "Fict. Metadata" }] };
-    await IOUtils.writeJSON(PathUtils.join(plugin.storageDir, "abbreviations.json"), table);
-    return { source: table.source, count: 1 };
-  });
-
-  await step("disable-enable-cleans-and-restores-menus", async () => {
-    const beforeFields = await Promise.all(allItems().map(saved));
-    const oldPlugin = plugin;
-    const before = menuState(win, allItems());
-    same(before.registrations.length, 2, "Initial menu registrations");
-    same([before.itemNodes, before.toolNodes], [1, 1], "Initial menu DOM instances");
-    const closingPreview = await previewReady(plugin, allItems(), win);
-    let disabled, enabled;
-    try {
-      await guard();
-      await productAddon.disable(); // Standard AddonManager API, no private toggles.
-      await waitFor("product shutdown", () => !Zotero.ScholarRank10 && !oldPlugin.active);
-      await waitFor("preview cleanup on disable", () => closingPreview.closed && oldPlugin.dialogs.size === 0);
-      disabled = menuState(win, allItems());
-      same(disabled.registrations.length, 0, "Disabled add-on menu registrations");
-      same([disabled.itemNodes, disabled.toolNodes], [0, 0], "Disabled add-on menu DOM after normal refresh");
-      same(oldPlugin.menuIDs.length, 0, "Product clears menu handles");
-    } finally {
-      if (!smokeStopping) {
-        await guard();
-        if (productAddon.userDisabled) await productAddon.enable();
-        plugin = await waitFor("product enabled again", () => Zotero.ScholarRank10?.catalog && Zotero.ScholarRank10);
-        await waitFor("re-enabled menus", () => plugin.menuIDs?.length === 2 && plugin.prefID);
+        await IOUtils.writeJSON(PathUtils.join(plugin.storageDir,data.kind+".json"),data);
+        plugin.catalog.replace(data);
       }
     }
-    check(productAddon.isActive, "Product did not return to active state");
-    enabled = menuState(win, allItems());
-    same(enabled.registrations.length, 2, "Re-enabled menu registrations");
-    same([enabled.itemNodes, enabled.toolNodes], [1, 1], "Re-enable must not duplicate menu DOM");
-    same(await Promise.all(allItems().map(saved)), beforeFields, "Disable/enable must not modify library records");
-    return { before, disabled, enabled, previewClosedOnDisable: closingPreview.closed };
+    const venue = smokeConfig.withData ? "IEEE Transactions on Pattern Analysis and Machine Intelligence" : syntheticVenues().journal;
+    fixtures.journal = await create({title:"  A fictional study of  BRCA1 and p53",DOI:"doi:10.12345/cleanup-test",publicationTitle:venue,volume:"002",pages:"S10 - S19",callNumber:"Old manual value",extra});
+    fixtures.unknown = await create({title:"An unmatched fixture",publicationTitle:"Fictional Unlisted Journal",callNumber:"Keep",extra});
+    fixtures.conference = new Zotero.Item("conferencePaper"); fixtures.conference.libraryID = Zotero.Libraries.userLibraryID;
+    fixtures.conference.setField("title", "Fictional conference fixture");
+    fixtures.conference.setField("conferenceName", smokeConfig.withData ? "CVPR" : syntheticVenues().conference);
+    fixtures.conference.setField("proceedingsTitle", smokeConfig.withData ? "Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition" : "Proceedings of " + syntheticVenues().conference);
+    fixtures.conference.setField("extra",extra); await fixtures.conference.saveTx({skipSelect:true});
+    return {fixtureIDs:allItems().map(item=>item.id),scientificData:smokeConfig.withData};
+  },true);
+
+  await step("exactly-three-menu-actions-and-direct-metadata-cleanup", async () => {
+    await win.ZoteroPane.selectItems([fixtures.journal.id]); await menuState(win,[fixtures.journal]);
+    const node=win.document.querySelector('[data-l10n-id="zsr10-menu"]');
+    const ids=Array.from(node.querySelectorAll("menuitem"),item=>item.getAttribute("data-l10n-id"));
+    same(ids,["zsr10-metadata","zsr10-doi","zsr10-update"],"Only three item commands");
+    invokeMenu(win,"zsr10-metadata");
+    await waitFor("direct metadata update",()=>!plugin.busy && fixtures.journal.getField("DOI")==="10.12345/cleanup-test",12000);
+    const value=await snapshot(fixtures.journal);
+    same(value.title,"A fictional study of BRCA1 and p53","Conservative cleanup");
+    same(value.volume,"2","Volume cleanup"); same(value.pages,"S10–S19","Page cleanup");
+    same(value.callNumber,"Old manual value","Metadata does not also update rank"); same(value.extra,extra,"No Extra writes");
+    return {menuIDs:ids,viaMenuDOM:true};
   });
 
-  if (!smokeConfig.withData) {
-    await step("public-reload-reads-local-overrides-and-updates-new-items", async () => {
-      same(plugin.catalog.list().map(data => data.kind).sort(), ["cas", "ccf", "jcr"], "Reloaded synthetic dataset kinds");
-      check(plugin.catalog.list().every(data => data.source.startsWith("SYNTHETIC ISOLATED SMOKE TEST ONLY")),
-        "A public smoke result must come only from the declared synthetic local files");
-      same(plugin.loadWarnings, [], "Valid overrides resolve missing-data warnings after re-enable");
-      await guard();
-      await Zotero.DB.executeTransaction(async () => {
-        await guard();
-        const item = new Zotero.Item("journalArticle");
-        item.libraryID = Zotero.Libraries.userLibraryID;
-        item.setField("title", "[隔离测试·纯合成] 导入后新条目：2.5 / Q2 / 3区");
-        item.setField("publicationTitle", syntheticVenues().journal);
-        item.setField("extra", "SYNTHETIC metrics only; not a real paper or scientific ranking.");
-        item.setCollections([collection.id]);
-        await item.save({ skipSelect: true });
-        fixtures.afterImport = item;
-      });
-      smokeReport.fixtures.afterImport = await saved(fixtures.afterImport);
-      const updatedItems = [fixtures.afterImport, fixtures.conference];
-      const counts = await apply(plugin, updatedItems);
-      same(counts.written, 2, "Synthetic journal and conference update count");
-      const journal = await saved(fixtures.afterImport), conference = await saved(fixtures.conference);
-      same(journal.callNumber, smokeConfig.expectedJournal, "Invented C / 2.5 / Q2 / 3区 result");
-      same(conference.callNumber, smokeConfig.expectedConference, "Invented conference B result");
-      same(backup(journal).original, "", "New synthetic journal retains its empty original backup");
-      same(backup(conference).original, "", "Synthetic conference retains its empty original backup");
-      const repeated = await apply(plugin, updatedItems);
-      same(repeated.unchanged, 2, "Synthetic local-override results are idempotent");
-      same(await saved(fixtures.afterImport), journal, "Repeated refresh preserves the new item's stored fields");
-      const skippedItems = [fixtures.unknown, fixtures.workshop, fixtures.protected, fixtures.managed];
-      const beforeSkipped = await Promise.all(skippedItems.map(saved));
-      const skipped = await apply(plugin, skippedItems);
-      same(skipped["no-data"], 2, "Unknown and workshop synthetic venues stay unmatched");
-      same(skipped["existing-call-number"], 2, "Both untouched and restored shelf marks stay protected");
-      same(await Promise.all(skippedItems.map(saved)), beforeSkipped, "Unmatched and protected items remain unchanged after importing");
-      return { counts, repeated, skipped, scientificData: false,
-        journal: fieldPair(journal), conference: fieldPair(conference) };
-    });
-  }
+  await step("direct-rank-overwrite-native-undo-and-redo", async () => {
+    const before=await snapshot(fixtures.journal); Zotero.UndoHistory.clear();
+    await menuState(win,[fixtures.journal]);
+    invokeMenu(win,"zsr10-update");
+    await waitFor("direct rank update",()=>!plugin.busy && fixtures.journal.getField("callNumber")===smokeConfig.expectedJournal,12000);
+    const after=await snapshot(fixtures.journal); same(after.extra,extra,"Rank never adds backup records");
+    same(await Zotero.UndoHistory.undo(),true,"Native undo"); same(await snapshot(fixtures.journal),before,"Undo rank only");
+    same(await Zotero.UndoHistory.redo(),true,"Native redo"); same(await snapshot(fixtures.journal),after,"Redo rank only");
+    same((await plugin.apply([fixtures.journal],{silent:true})).unchanged,1,"Idempotent update");
+    same((await plugin.apply([fixtures.unknown],{silent:true}))["no-data"],1,"Unknown venue does not clear values");
+    same((await plugin.apply([fixtures.conference],{silent:true})).written,1,"Conference update");
+    same(fixtures.conference.getField("callNumber"),smokeConfig.expectedConference,"Conference only has CCF rank");
+    same(fixtures.conference.getField("extra"),extra,"Conference Extra unchanged");
+    return {rank:after.callNumber,viaMenuDOM:true,undoRedo:true};
+  });
 
-  await step("metadata-settings-controls", async () => {
+  await step("settings-three-buttons-and-independent-automatic-controls", async () => {
     plugin.showSettings();
-    const preferences = await waitFor("Scholar Rank settings controls", () => {
-      const windows = Services.wm.getEnumerator(null);
-      while (windows.hasMoreElements()) {
-        const candidate = windows.getNext();
-        if (candidate.document?.getElementById("zsr10-metadata-rules")?.querySelectorAll("input").length === 7) return candidate;
-      }
-      return null;
-    }, 12000);
-    same(preferences.document.getElementById("zsr10-metadata-auto").checked, false, "Auto-cleanup default checkbox");
-    const autoMetadata = preferences.document.getElementById("zsr10-metadata-auto");
-    const autoRanks = preferences.document.getElementById("zsr10-auto-new");
-    const originalAuto = autoRanks.checked;
-    if (!autoRanks.checked) autoRanks.click();
-    autoMetadata.click();
-    same(plugin.pref("autoNew"), true, "Management persists automatic metrics preference");
-    same(plugin.pref("metadata.auto"), true, "Management persists automatic cleanup preference");
-    check(preferences.document.getElementById("zsr10-auto-status").textContent.includes("自动整理 → 自动更新指标"), "Combined mode summary");
-    autoMetadata.click();
-    if (autoRanks.checked !== originalAuto) autoRanks.click();
-    const checkbox = preferences.document.querySelectorAll("#zsr10-metadata-rules input")[1];
-    checkbox.click(); same(plugin.pref("metadata.doi"), false, "Rule control persists disabled preference");
-    checkbox.click(); same(plugin.pref("metadata.doi"), true, "Rule control can re-enable DOI cleanup");
-    check(preferences.document.getElementById("zsr10-abbreviation-summary").textContent.includes("1"), "Settings show abbreviation count");
-    check(preferences !== win, "Preferences expected in a separate window");
-    preferences.close();
-    return { controls: 7, defaultAuto: false, preferenceChange: true };
-  });
-
-  let metadataItem, metadataOriginal, metadataAfter;
-  const metadataFields = ["title", "DOI", "pages", "volume", "issue", "language", "journalAbbreviation", "callNumber", "extra"];
-  const metaSaved = async item => {
-    await item.reload(null, true);
-    return Object.fromEntries(metadataFields.map(field => [field, String(item.getField(field) || "")]));
-  };
-  const metadataDialog = async (items, options = {}) => {
-    const dialog = await plugin.previewMetadata(items, { win, ...options });
-    smokePreviews.add(dialog);
-    await waitFor("metadata preview DOM", () => !dialog.closed && dialog.document.getElementById("rows")?.children.length === items.length, 12000);
-    return dialog;
-  };
-
-  await step("metadata-preview-duplicates-and-apply", async () => {
-    same(plugin.abbreviations.count, 1, "Abbreviation table reloads after enable");
-    const fields = { title: "BRCA1  and p53 in a fictional study", DOI: "doi:10.12345/scholar-smoke", pages: "S10 - S19", volume: "002", issue: "03",
-      publicationTitle: "Fictional Journal of Metadata Smoke", callNumber: "USER-SHELF-KEEP", extra: "User note — preserve exactly" };
-    await guard();
-    metadataItem = new Zotero.Item("journalArticle");
-    metadataItem.libraryID = Zotero.Libraries.userLibraryID;
-    for (const [field, value] of Object.entries(fields)) metadataItem.setField(field, value);
-    await metadataItem.saveTx({ skipSelect: true });
-    const duplicate = new Zotero.Item("journalArticle"); duplicate.libraryID = metadataItem.libraryID;
-    duplicate.setField("title", "Another fictional title for duplicate testing"); duplicate.setField("DOI", "10.12345/scholar-smoke");
-    await duplicate.saveTx({ skipSelect: true });
-    metadataOriginal = await metaSaved(metadataItem);
-    const dialog = await metadataDialog([metadataItem]);
-    same(await metaSaved(metadataItem), metadataOriginal, "Metadata preview must not write");
-    check(!dialog.arguments[0].duplicateWarning, "Duplicate lookup raised an error");
-    check(dialog.arguments[0].rows[0].duplicates.some(candidate => candidate.id === duplicate.id), "DOI duplicate was not found");
-    await dialog.arguments[0].selectDuplicates([metadataItem.id, duplicate.id]);
-    same(win.ZoteroPane.getSelectedItems().map(item => item.id).sort(), [metadataItem.id, duplicate.id].sort(), "Duplicate selection");
-    Zotero.UndoHistory.clear();
-    dialog.document.getElementById("apply").click();
-    await waitFor("metadata applied through actual preview button", () => dialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
-    metadataAfter = await metaSaved(metadataItem);
-    same(metadataAfter.DOI, "10.12345/scholar-smoke", "Clean DOI");
-    same(metadataAfter.title, "BRCA1 and p53 in a fictional study", "Keep gene names and title case");
-    same(metadataAfter.pages, "S10–S19", "Clean page range");
-    same(metadataAfter.volume, "2", "Clean numeric volume");
-    same(metadataAfter.journalAbbreviation, "Fict. Metadata", "Fill imported abbreviation");
-    same(metadataAfter.language, "en", "Fill empty language conservatively");
-    same(metadataAfter.callNumber, "USER-SHELF-KEEP", "Keep original shelf mark");
-    check(metadataAfter.extra.includes("Zotero Scholar Metadata:"), "Missing metadata backup");
-    check(metadataAfter.extra.startsWith(metadataOriginal.extra), "Lost user Extra note");
-    check(dialog.document.getElementById("apply").disabled, "Double-apply button must be disabled");
-    dialog.close();
-    return { stored: metadataAfter, duplicateID: duplicate.id, appliedViaDOM: true };
-  }, true);
-
-  await step("metadata-native-undo-redo-and-no-repeat-write", async () => {
-    same(await Zotero.UndoHistory.undo(), true, "Undo metadata operation");
-    same(await metaSaved(metadataItem), metadataOriginal, "Undo all cleanup fields plus backup");
-    same(await Zotero.UndoHistory.redo(), true, "Redo metadata operation");
-    same(await metaSaved(metadataItem), metadataAfter, "Redo all cleanup fields plus backup");
-    const result = await apply(plugin, [metadataItem], { metadata: true });
-    same(result.written || 0, 0, "Repeat cleanup must not write");
-    return { undo: true, redo: true, noRepeatWrite: true };
-  });
-
-  await step("metadata-stale-preview-and-protected-restore", async () => {
-    const dialog = await metadataDialog([metadataItem], { restore: true });
-    metadataItem.setField("DOI", "10.12345/manual"); await metadataItem.saveTx({ skipSelect: true });
-    const result = await dialog.arguments[0].apply([metadataItem.id]);
-    same(result["manually-edited"], 1, "Stale preview skips changed item");
-    same(metadataItem.getField("volume"), "2", "Stale restore cannot write other fields");
-    dialog.close();
-    const current = await metadataDialog([metadataItem], { restore: true });
-    await current.arguments[0].apply([metadataItem.id]);
-    const restored = await metaSaved(metadataItem);
-    same(restored.DOI, "10.12345/manual", "Manual DOI survives restore");
-    same(restored.volume, metadataOriginal.volume, "Unedited volume restored");
-    same(restored.title, metadataOriginal.title, "Original title restored");
-    same(restored.callNumber, metadataOriginal.callNumber, "Restore leaves shelf mark intact");
-    current.close();
-    return { restored, partialRestore: true };
-  });
-
-  await step("metadata-auto-new-independent-toggle", async () => {
-    plugin.setPref("metadata.auto", true); plugin.setPref("autoNew", false);
-    try {
-      const item = new Zotero.Item("journalArticle"); item.libraryID = Zotero.Libraries.userLibraryID;
-      item.setField("title", "A fictional test of automatic cleanup"); item.setField("DOI", "doi:10.12345/automatic");
-      item.setField("callNumber", "AUTOMATIC-SHELF"); await item.saveTx({ skipSelect: true });
-      await waitFor("automatic metadata cleanup", () => !plugin.busy && item.getField("DOI") === "10.12345/automatic", 12000);
-      await plugin.pendingAuto;
-      await item.reload(null, true);
-      same(item.getField("callNumber"), "AUTOMATIC-SHELF", "Metadata-only auto mode keeps shelf mark");
-      same(item.getField("DOI"), "10.12345/automatic", "Automatic cleanup persisted");
-      return { automaticCleanup: true, independentToggle: true };
-    } finally { plugin.setPref("metadata.auto", false); }
-  });
-
-  await step("management-manual-editor-cancel-override-undo-and-restore", async () => {
-    await guard();
-    await win.ZoteroPane.selectItems([metadataItem.id]);
-    const before = await metaSaved(metadataItem);
-    plugin.showSettings();
-    const preferences = await waitFor("management buttons", () => {
-      const windows = Services.wm.getEnumerator(null);
-      while (windows.hasMoreElements()) {
-        const candidate = windows.getNext();
-        if (candidate.document?.getElementById("zsr10-manual")) return candidate;
-      }
-    }, 12000);
+    const preferences=await waitFor("new settings",()=>{
+      const windows=Services.wm.getEnumerator(null);
+      while(windows.hasMoreElements()) { const candidate=windows.getNext(); if(candidate.document?.getElementById("zsr10-doi")) return candidate; }
+    },12000);
     smokePreviews.add(preferences);
-    preferences.document.getElementById("zsr10-manual").click();
-    const dialog = await waitFor("manual editor opened from management", () => [...plugin.dialogs].find(candidate =>
-      !candidate.closed && candidate.arguments?.[0]?.manual && candidate.document.getElementById("rows")?.children.length === 1), 12000);
-    smokePreviews.add(dialog);
-    check(dialog.arguments[0].rows[0].id === metadataItem.id, "Editor uses main-window selected item");
-    check(dialog.document.querySelectorAll("textarea").length === 8, "Eight editable fields for journal article");
-    same(await metaSaved(metadataItem), before, "Opening management editor must not write");
-    const suggest = dialog.document.querySelector(".suggest");
-    check(suggest && !suggest.disabled, "Suggestion control exists");
-    suggest.click();
-    const edited = { DOI: "doi:10.12345/manual-override", language: "fr", callNumber: "C" };
-    // Reset all fields after checking suggestions; explicitly edit only these three.
-    for (const input of dialog.document.querySelectorAll("textarea")) input.value = before[input.dataset.field];
-    for (const [name, value] of Object.entries(edited)) dialog.document.querySelector(`textarea[data-field="${name}"]`).value = value;
-    const confirm = plugin.confirmManual;
-    let confirms = 0;
+    const doc=preferences.document;
+    for(const id of ["zsr10-metadata","zsr10-doi","zsr10-ranks"]) check(doc.getElementById(id),"Missing management action "+id);
+    check(!doc.getElementById("zsr10-restore-manual") && !doc.getElementById("zsr10-manual"),"Retired controls removed");
+    same(doc.querySelectorAll("#zsr10-metadata-rules input").length,7,"Individual rule switches");
+    doc.getElementById("zsr10-auto-new").click(); doc.getElementById("zsr10-metadata-auto").click();
+    same(plugin.pref("autoNew"),true,"Auto ranks saved"); same(plugin.pref("metadata.auto"),true,"Auto cleanup saved");
+    check(doc.getElementById("zsr10-auto-status").textContent.includes("自动整理 → 自动更新分区指标"),"Combined status");
+    doc.getElementById("zsr10-auto-new").click(); doc.getElementById("zsr10-metadata-auto").click();
+    fixtures.journal.setField("callNumber","Another manual value"); await fixtures.journal.saveTx({skipSelect:true});
+    await win.ZoteroPane.selectItems([fixtures.journal.id]); doc.getElementById("zsr10-ranks").click();
+    await waitFor("settings updates main-window selection",()=>!plugin.busy && fixtures.journal.getField("callNumber")===smokeConfig.expectedJournal,12000);
+    preferences.close(); return {threeActions:true,toggles:true,selectionFromMainWindow:true};
+  });
+
+  await step("automatic-processing-is-offline-and-preserves-existing-call-number", async () => {
+    const lookup=plugin.lookupDOI; let lookups=0; plugin.lookupDOI=async()=>{lookups++;throw new Error("Auto mode must not query DOI");};
+    plugin.setPref("metadata.auto",true);plugin.setPref("autoNew",true);
     try {
-      // Stub only the final native confirmation in this isolated automated test.
-      plugin.confirmManual = () => { confirms++; return false; };
-      dialog.document.getElementById("apply").click();
-      await waitFor("manual cancellation", () => dialog.document.getElementById("result").textContent.includes("已取消"), 12000);
-      same(await metaSaved(metadataItem), before, "Cancelled overwrite makes no writes");
-      plugin.confirmManual = () => { confirms++; return true; };
-      Zotero.UndoHistory.clear();
-      dialog.document.getElementById("apply").click();
-      await waitFor("manual editor apply", () => dialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
-    } finally { plugin.confirmManual = confirm; }
-    const overridden = await metaSaved(metadataItem);
-    for (const [name, value] of Object.entries(edited)) same(overridden[name], value, "Manual override " + name);
-    check(overridden.extra.includes("Zotero Scholar Manual:"), "Persistent manual backup exists");
-    same(await Zotero.UndoHistory.undo(), true, "Native undo manual override");
-    same(await metaSaved(metadataItem), before, "Undo restores fields and backup exactly");
-    same(await Zotero.UndoHistory.redo(), true, "Native redo manual override");
-    same(await metaSaved(metadataItem), overridden, "Redo restores fields and backup exactly");
-    await apply(plugin, [metadataItem], { metadata: true, allowOverwrite: true, repairCleared: true });
-    const protectedValues = await metaSaved(metadataItem);
-    for (const [name, value] of Object.entries(edited)) same(protectedValues[name], value, "Ordinary update preserves manual " + name);
-    dialog.close();
-    preferences.document.getElementById("zsr10-restore-manual").click();
-    const restoreDialog = await waitFor("manual restore opened from management", () => [...plugin.dialogs].find(candidate =>
-      !candidate.closed && candidate.arguments?.[0]?.manualRestore && candidate.document.getElementById("rows")?.children.length === 1), 12000);
-    smokePreviews.add(restoreDialog);
-    restoreDialog.document.getElementById("apply").click();
-    await waitFor("manual restore applied", () => restoreDialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
-    const restored = await metaSaved(metadataItem);
-    for (const name of Object.keys(edited)) same(restored[name], before[name], "Restore first manual value " + name);
-    check(!restored.extra.includes("Zotero Scholar Manual:"), "Manual locks released after restore");
-    restoreDialog.close(); preferences.close();
-    return { confirms, finalConfirmationStubbed: true, editorViaManagementDOM: true, undoRedo: true, manualProtection: true, restored: true };
+      const record=await create({title:"A fictional automatic study of cells",DOI:"doi:10.12345/automatic-test",publicationTitle:fixtures.journal.getField("publicationTitle"),callNumber:"Auto must keep",extra});
+      await waitFor("automatic cleanup",()=>!plugin.busy && record.getField("DOI")==="10.12345/automatic-test",12000); await plugin.pendingAuto;
+      same(record.getField("callNumber"),"Auto must keep","Keep existing rank in automatic mode"); same(record.getField("extra"),extra,"Auto does not write Extra"); same(lookups,0,"No DOI network call");
+      return {networkCalls:lookups,extraUntouched:true};
+    } finally {plugin.setPref("metadata.auto",false);plugin.setPref("autoNew",false);plugin.lookupDOI=lookup;}
   });
 
-  await step(smokeConfig.autoClose ? "final-preview-before-auto-close" : "leave-final-preview-for-inspection", async () => {
-    plugin = Zotero.ScholarRank10;
-    check(plugin?.active && plugin.catalog, "Product not active for final preview");
-    await guard();
-    await win.ZoteroPane.selectItems(allItems().map(item => item.id));
-    const dialog = await previewReady(plugin, allItems(), win);
-    if (!smokeConfig.autoClose) dialog.focus();
-    smokeReport.previewReady = true;
-    smokeReport.finalFixtures = {};
-    for (const [name, item] of Object.entries(fixtures)) smokeReport.finalFixtures[name] = await saved(item);
-    return { title: dialog.document.title, renderedRows: dialog.document.getElementById("rows").children.length,
-      retainedItemIDs: allItems().map(item => item.id) };
+  await step("DOI-command-direct-overwrite-preserves-unrelated-data-and-supports-undo", async () => {
+    const record=await create({title:"Old bibliographic title",DOI:"10.12345/manual-test",publicationTitle:"Old Journal",pages:"Keep pages",callNumber:"Keep metrics",extra});
+    record.setCreators([{creatorType:"author",name:"Old Group"}]); await record.saveTx({skipSelect:true});
+    const before=await snapshot(record), lookup=plugin.lookupDOI;
+    const source={itemType:"journalArticle",DOI:"10.12345/manual-test",title:"Returned DOI title",publicationTitle:"Returned Journal",date:"2026",creators:[{creatorType:"author",firstName:"First",lastName:"Author"}],extra:"Do not import",tags:["Do not import"],attachments:[{}],callNumber:"Do not import"};
+    plugin.lookupDOI=async()=>[source];
+    try {
+      Zotero.UndoHistory.clear(); await win.ZoteroPane.selectItems([record.id]);await menuState(win,[record]);
+      invokeMenu(win,"zsr10-doi");
+      await waitFor("DOI overwrite from command",()=>!plugin.busy && record.getField("title")===source.title,12000);
+      const after=await snapshot(record); same(after.creators,source.creators,"Native creator update");
+      same(after.callNumber,before.callNumber,"DOI does not update metrics");same(after.pages,before.pages,"Missing fields not erased");same(after.extra,before.extra,"Extra unchanged");
+      same(record.getTags().length,0,"No imported tags");same(record.numAttachments(),0,"No downloaded attachments");
+      same(await Zotero.UndoHistory.undo(),true,"DOI undo");same(await snapshot(record),before,"Undo authors and all fields");
+      same(await Zotero.UndoHistory.redo(),true,"DOI redo");same(await snapshot(record),after,"Redo authors and all fields");
+      return {viaMenuDOM:true,lookupStubbed:true,undoRedo:true};
+    } finally {plugin.lookupDOI=lookup;}
   });
 
+  await step("live-native-DOI-updates-existing-item-without-creating-duplicates", async () => {
+    const record=await create({title:"Replace this title from DOI",DOI:"10.1038/nature14539",callNumber:"Keep metrics",extra});
+    const before=(await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length;
+    const counts=await plugin.updateByDOI([record],{silent:true});
+    same(counts.written,1,"Successful live DOI write");
+    const result=await snapshot(record);
+    same(result.DOI.toLowerCase(),"10.1038/nature14539","Live DOI matches");
+    same(result.title,"Deep learning","Live title returned");check(result.creators.length>0,"Live authors returned");
+    same(result.callNumber,"Keep metrics","Live DOI update preserves metrics");same(result.extra,extra,"Live DOI update preserves Extra");
+    same((await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length,before,"Native search saves no items");
+    return {liveNetwork:true,updatedInPlace:true,DOI:result.DOI,title:result.title,creatorCount:result.creators.length};
+  });
+
+  await step("disable-and-enable-cleanly-registers-three-commands", async () => {
+    plugin.alert=originalAlert;
+    await productAddon.disable(); await waitFor("plugin disabled",()=>!Zotero.ScholarRank10,12000);
+    same((await menuState(win,[])).registrations.length,0,"Menus removed on disable");
+    await productAddon.enable(); plugin=await waitFor("plugin re-enabled",()=>Zotero.ScholarRank10?.prefID && Zotero.ScholarRank10,12000);
+    same((await menuState(win,[fixtures.journal])).registrations.length,2,"Menus registered once");
+    same(win.document.querySelector('[data-l10n-id="zsr10-menu"]').querySelectorAll("menuitem").length,3,"Exactly three commands after reload");
+    same(fixtures.journal.getField("extra"),extra,"Reload does not write Extra");
+    return {reload:true,summaryDialogsStubbed:alerts};
+  });
   await completeSmoke();
 }

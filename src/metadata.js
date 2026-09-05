@@ -1,12 +1,9 @@
-/* Independent MIT implementation of conservative field cleanup and recovery.
+/* Independent MIT implementation of conservative field cleanup.
  * No third-party formatter code, dictionaries, datasets, or network access. */
 (function (root) {
   "use strict";
   const Core = typeof module !== "undefined" && module.exports ? require("./core.js") : root.ScholarCore;
-  const PREFIX = "Zotero Scholar Metadata: ";
   const FIELDS = Object.freeze(["title", "DOI", "pages", "volume", "issue", "language", "journalAbbreviation"]);
-  const MANUAL_PREFIX = "Zotero Scholar Manual: ";
-  const MANUAL_FIELDS = Object.freeze([...FIELDS, "callNumber"]);
   const DEFAULTS = Object.freeze({ title: true, doi: true, pages: true, numbers: true, language: true, abbreviation: true });
   const text = value => String(value ?? "");
   const plain = value => !/[<>]/.test(value);
@@ -66,59 +63,10 @@
     }
   }
 
-  function readState(extra, prefix = PREFIX, allowed = FIELDS) {
-    const lines = text(extra).split(/\r?\n/).filter(line => line.startsWith(prefix));
-    if (!lines.length) return { state: null, corrupt: false };
-    try {
-      if (lines.length !== 1 || lines[0].length > 200000) throw new Error();
-      const state = JSON.parse(lines[0].slice(prefix.length));
-      if (state.v !== 1 || typeof state.addedSeparator !== "boolean" || !state.fields || Array.isArray(state.fields)
-          || typeof state.fields !== "object" || !Object.keys(state.fields).length) throw new Error();
-      for (const [field, values] of Object.entries(state.fields)) {
-        if (!allowed.includes(field) || !values || typeof values.original !== "string" || typeof values.last !== "string") throw new Error();
-      }
-      return { state, corrupt: false };
-    } catch (_) { return { state: null, corrupt: true }; }
-  }
-
-  const readManual = extra => readState(extra, MANUAL_PREFIX, MANUAL_FIELDS);
-
-  function writeState(extra, state, prefix = PREFIX) {
-    const value = text(extra);
-    const line = prefix + JSON.stringify(state);
-    if (line.length > 200000) throw new Error("备份过长，请减少单次字段内容。");
-    const pattern = new RegExp("^" + prefix + "[^\\r\\n]*", "m");
-    if (pattern.test(value)) return value.replace(pattern, () => line);
-    return value + (value && !value.endsWith("\n") ? "\n" : "") + line;
-  }
-
-  function removeState(extra, state, prefix = PREFIX) {
-    const value = text(extra), match = new RegExp("^" + prefix + "[^\\r\\n]*", "m").exec(value);
-    if (!match) return value;
-    let start = match.index;
-    if (state.addedSeparator && start > 0 && value[start - 1] === "\n") start -= 1;
-    return value.slice(0, start) + value.slice(match.index + match[0].length);
-  }
-
   function plan(item, options = {}, abbreviations = new Abbreviations()) {
-    const { state, corrupt } = readState(item.extra);
-    const manual = readManual(item.extra);
     const warnings = [], fields = {};
-    if (corrupt || manual.corrupt) return { action: "skip", reason: "invalid-backup", fields, warnings: ["元数据或手动覆盖备份异常，未整理。"] };
     const enabled = { ...DEFAULTS, ...options };
-    const next = state ? JSON.parse(JSON.stringify(state)) : {
-      v: 1, addedSeparator: Boolean(item.extra && !item.extra.endsWith("\n")), fields: {}
-    };
-    const propose = (field, value) => {
-      const before = text(item[field]);
-      if (value === before) return;
-      if (manual.state?.fields[field]) { warnings.push(`${field} 为手动设定，已保留。`); return; }
-      if (state?.fields[field] && before !== state.fields[field].last) {
-        warnings.push(`${field} 已被手动修改，已保留。`); return;
-      }
-      fields[field] = value;
-      next.fields[field] = { original: state?.fields[field]?.original ?? before, last: value };
-    };
+    const propose = (field, value) => { if (value !== text(item[field])) fields[field] = value; };
     if (enabled.title && plain(text(item.title))) {
       // Retain every word's case, punctuation and spelling, including genes.
       propose("title", text(item.title).trim().replace(/[\s\u00a0]+/g, " "));
@@ -146,63 +94,49 @@
       else warnings.push(abbreviations.count ? "缩写表未匹配，保留现有值。" : "尚未导入期刊缩写表，已跳过。 ");
     }
     return Object.keys(fields).length
-      ? { action: "write", fields, extra: writeState(item.extra, next), warnings }
+      ? { action: "write", fields, warnings }
       : { action: "skip", reason: "unchanged", fields, warnings };
   }
 
-  function restore(item) {
-    const { state, corrupt } = readState(item.extra), fields = {}, warnings = [];
-    const manual = readManual(item.extra);
-    if (corrupt || manual.corrupt || !state) return { action: "skip", reason: corrupt || manual.corrupt ? "invalid-backup" : "no-backup", fields, warnings };
-    const next = JSON.parse(JSON.stringify(state));
-    for (const [field, values] of Object.entries(state.fields)) {
-      if (manual.state?.fields[field]) { warnings.push(`${field} 为手动设定，请先恢复手动覆盖。`); continue; }
-      if (text(item[field]) !== values.last) { warnings.push(`${field} 已被手动修改，已保留。`); continue; }
-      fields[field] = values.original; delete next.fields[field];
-    }
-    if (!Object.keys(fields).length) return { action: "skip", reason: "manually-edited", fields, warnings };
-    return { action: "write", fields, warnings,
-      extra: Object.keys(next.fields).length ? writeState(item.extra, next) : removeState(item.extra, state) };
+  const DOI_FIELDS = Object.freeze([...new Set([...FIELDS, "publicationTitle", "date", "ISSN", "url", "abstractNote", "proceedingsTitle", "conferenceName", "publisher", "place"])]);
+  function doiKey(value) {
+    const doi = cleanDOI(value);
+    return /^10\.\d{4,9}\/\S+$/.test(doi) && !/[<>"\u0000-\u001f]/.test(doi) ? doi.toLowerCase() : "";
   }
-
-  // Explicitly reviewed edits have their own backup and persistent field locks.
-  // Keep automatic backups intact. Repeated manual edits retain the first value
-  // until this manual session is restored; Zotero Undo handles individual steps.
-  function planManual(item, values) {
-    const { state, corrupt } = readManual(item.extra);
-    if (corrupt || readState(item.extra).corrupt || Core.readState(item.extra).corrupt) {
-      return { action: "skip", reason: "invalid-backup", fields: {}, warnings: ["备份异常，请先检查 Extra；未覆盖。"] };
-    }
-    if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error("手动编辑内容无效。");
-    const next = state ? JSON.parse(JSON.stringify(state)) : {
-      v: 1, addedSeparator: Boolean(item.extra && !item.extra.endsWith("\n")), fields: {}
-    };
-    const fields = {};
-    for (const [field, value] of Object.entries(values)) {
-      if (!MANUAL_FIELDS.includes(field) || typeof value !== "string" || value.length > 10000 || /\u0000/.test(value)) {
-        throw new Error("不支持的字段或内容过长：" + field);
+  function normalizeCreators(values) {
+    if (!Array.isArray(values) || !values.length || values.length > 10000) return null;
+    const result = [];
+    for (const value of values) {
+      if (!value || typeof value.creatorType !== "string" || !value.creatorType) return null;
+      const type = value.creatorType;
+      if (value.fieldMode === 1 || typeof value.name === "string") {
+        const name = text(value.name ?? value.lastName).trim();
+        if (!name) return null;
+        result.push({ creatorType: type, name });
+      } else {
+        if (typeof value.lastName !== "string" || !value.lastName.trim()) return null;
+        if (value.firstName != null && typeof value.firstName !== "string") return null;
+        result.push({ creatorType: type, firstName: text(value.firstName).trim(), lastName: value.lastName.trim() });
       }
-      const before = text(item[field]);
-      if (value === before) continue;
-      fields[field] = value;
-      next.fields[field] = { original: state?.fields[field]?.original ?? before, last: value };
     }
-    return Object.keys(fields).length
-      ? { action: "write", fields, extra: writeState(item.extra, next, MANUAL_PREFIX), warnings: [] }
-      : { action: "skip", reason: "unchanged", fields, warnings: [] };
+    return result;
   }
-
-  function restoreManual(item) {
-    const { state, corrupt } = readManual(item.extra), fields = {}, warnings = [];
-    if (corrupt || !state) return { action: "skip", reason: corrupt ? "invalid-backup" : "no-backup", fields, warnings };
-    const next = JSON.parse(JSON.stringify(state));
-    for (const [field, values] of Object.entries(state.fields)) {
-      if (text(item[field]) !== values.last) { warnings.push(`${field} 在覆盖后又被修改，已保留。`); continue; }
-      fields[field] = values.original; delete next.fields[field];
+  function doiPlan(item, source) {
+    const fields = {}, skip = reason => ({ action: "skip", reason, fields });
+    if (!doiKey(item.DOI)) return skip("invalid-doi");
+    if (!source || doiKey(source.DOI) !== doiKey(item.DOI)) return skip("doi-mismatch");
+    if (source.itemType !== item.itemType) return skip("doi-type-mismatch");
+    for (const field of DOI_FIELDS) {
+      let value = source[field];
+      if (typeof value !== "string" || !value.trim() || value.length > 100000 || /\u0000/.test(value)) continue;
+      value = field === "DOI" ? cleanDOI(value) : value.trim();
+      if (value !== text(item[field])) fields[field] = value;
     }
-    if (!Object.keys(fields).length) return { action: "skip", reason: "manually-edited", fields, warnings };
-    return { action: "write", fields, warnings,
-      extra: Object.keys(next.fields).length ? writeState(item.extra, next, MANUAL_PREFIX) : removeState(item.extra, state, MANUAL_PREFIX) };
+    const creators = normalizeCreators(source.creators);
+    const changedCreators = creators && JSON.stringify(creators) !== JSON.stringify(normalizeCreators(item.creators));
+    return Object.keys(fields).length || changedCreators
+      ? { action: "write", fields, ...(changedCreators ? { creators } : {}) }
+      : skip("unchanged");
   }
 
   function duplicateIndex(items) {
@@ -230,8 +164,8 @@
     };
   }
 
-  const api = { FIELDS, PREFIX, DEFAULTS, cleanDOI, inferLanguage, Abbreviations, readState, plan, restore, duplicateIndex,
-    MANUAL_FIELDS, MANUAL_PREFIX, readManual, planManual, restoreManual };
+  const api = { FIELDS, DEFAULTS, cleanDOI, inferLanguage, Abbreviations, plan, duplicateIndex,
+    DOI_FIELDS, doiKey, normalizeCreators, doiPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScholarMetadata = api;
 })(globalThis);

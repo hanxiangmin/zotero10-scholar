@@ -1,45 +1,41 @@
-# Scholar Rank · 元数据整理与学术指标
+# Scholar Rank · 元数据与学术分区
 
-**Zotero 10 · 3.1.1 本地开发版 · MIT**
+**Zotero 10 · 3.1.2 本地开发版 · MIT**
 
-本目录在 Scholar Rank 3.0.3 基础上独立实现元数据整理，保留 CCF、影响因子、JCR 与 2025 中科院大类分区/TOP 的索书号显示。
-开发目录：`E:\GitHub\Tools\zotero10-scholar-next`，分支 `codex/metadata-core`。本版尚未发布到 GitHub Release。
+独立实现元数据整理、DOI 信息更新，以及 CCF、影响因子、JCR、2025 中科院大类分区/TOP 的索书号显示。
+本版保存在 `E:\GitHub\Tools\zotero10-scholar-next`，尚未发布到 GitHub Release。
 
-## 功能
+## 三个入口
 
-- **预览后应用**：逐字段显示当前值与拟写入值，可按条目勾选；保存前再次核对内容，避免覆盖预览后的修改。
-- **DOI、页码、卷期整理**：清理明确的 DOI 前缀，规范页码连接符和纯数字卷期；保留文章编号、罗马数字及特殊期号。
-- **保守标题整理**：只整理普通标题的空白，保留大小写、基因名、模型名；含富文本的标题跳过。没有整库自动改大小写。
-- **语言补全**：仅补空值，保守识别中文/英文；短文本、不确定或其他语言跳过。
-- **期刊缩写**：从用户导入表按有效 ISSN 或刊名匹配；歧义、未命中和已有缩写不覆盖。
-- **重复提示**：检查同一库的 DOI 或规范化标题，可定位疑似重复条目，不自动合并或删除。
-- **原值恢复与撤销**：整理字段使用独立 Extra 备份，逐字段保护手动修改；支持 Zotero 撤销/重做。
-- **统一处理顺序**：自动整理与自动填充指标分别开关，都启用时先整理再匹配指标；默认均关闭。
-- **管理页与手动覆盖**：集中设置自动处理；可编辑选中文献的字段、填入自动建议并确认覆盖。人工设定有独立备份，普通更新不会覆盖，可单独恢复。
+| 操作 | 功能 |
+| --- | --- |
+| **整理元数据** | 按设置整理标题空白、DOI 前缀、页码、卷期，并补全空语言和期刊缩写；不同时修改分区指标。 |
+| **根据 DOI 更新** | 仅手动触发。通过 Zotero 自带查询器联网获取题目、作者、期刊、日期等信息，成功返回的字段直接覆盖旧值。 |
+| **更新分区指标** | 用本地指标表直接更新所选条目的索书号，匹配失败时保留原值。 |
 
-指标仅显示有数据的部分：`A|20.4|Q1|1区TOP`、`3.6|Q1|3区`、`C`。年份以本地数据包为准。
+菜单不再区分预览、普通更新、覆盖、备份和恢复；也不新增或修改 Extra 记录。误操作可使用 Zotero 原生撤销。
+指标只显示有数据的部分，如 `A|20.4|Q1|1区TOP`、`3.6|Q1|3区` 或 `C`。
 
-## 安装和使用
+## 安装与使用
 
-1. 在 Zotero 的“工具 → 插件 → 从文件安装插件”中安装本目录的 `dist/zotero10-scholar-3.1.1.xpi`，不要解压。
-2. 本版沿用原 Scholar Rank 的插件 ID，安装后升级替换原版；本目录源码与原开发目录分别保存。
-3. 公开包不附带 CCF/JCR/中科院指标表，也不附带完整期刊缩写表。可在设置中分别导入有权使用的 JSON；基础格式整理无需这些数据。
-4. 选中文献 → 右键 **Scholar Rank → 整理元数据与更新指标** → 检查前后值 → 应用勾选条目。
-5. 打开 **工具 → Scholar Rank 设置与数据版本**，在“自动处理”中分别开启自动整理、自动更新指标。仅处理之后新增的条目，按本地数据更新，不自动下载年度数据。
-6. 已有条目可在管理页点击 **整理并更新指标** 或 **仅更新指标**。需要覆盖时用 **手动编辑与覆盖**，编辑右侧值（或填入自动建议）后确认；未编辑字段不变。
-7. 需要撤销时用 Zotero 撤销，或选择 **恢复手动覆盖** / **恢复整理前的元数据**。手动覆盖期间的人工设定不会被普通更新覆盖。
+1. 在 Zotero **工具 → 插件 → 从文件安装插件** 中安装 `dist/zotero10-scholar-3.1.2.xpi`，不要解压。本版沿用原插件 ID，可直接升级。
+2. 公开安装包不含第三方指标表；在 **工具 → Scholar Rank 设置** 导入有权使用的 CCF/JCR/CAS JSON。期刊缩写表单独导入。
+3. 在主窗口选中文献，右键 **Scholar Rank**，选择以上三个操作之一。设置页也有相同的三个按钮。
+4. 设置中可分别开启“新增条目时自动整理元数据”和“新增条目时自动更新分区指标”。默认关闭，自动模式仅填空索书号；**DOI 联网更新始终只能手动执行**。
 
-个人数据构建 `dist/zotero10-scholar-3.1.1-personal.xpi` 包含开发者本地指标表；期刊缩写表仍单独导入。
-[完整安装说明](docs/INSTALL.md) · [缩写 JSON 格式](docs/DATA_FORMAT.md#journal-abbreviations)
+DOI 更新不会清空未返回的字段，不改条目类型、附件、笔记、标签、Extra 或索书号。DOI 不一致、类型不同或查询失败时跳过。需要刷新分区时再点击“更新分区指标”。
+指标年份以本地导入数据为准，不自动下载新年度数据。
+
+个人使用的 `dist/zotero10-scholar-3.1.2-personal.xpi` 含本地指标表，不能作为公开安装包上传。
+[完整说明](docs/INSTALL.md) · [数据格式](docs/DATA_FORMAT.md)
 
 > [!WARNING]
-> 同时安装 Linter for Zotero / Format Metadata 时，仍需关闭其 **“清理被滥用的标准字段”** 规则。
-> 启用本版自动整理后，也请停用 Linter 中重复的自动整理，避免同一条目被处理两次。
-> [冲突与恢复说明](docs/INSTALL.md#与-linter-for-zotero--format-metadata-共存)
+> 与 Linter for Zotero / Format Metadata 共存时，仍需关闭其 **“清理被滥用的标准字段”**，否则索书号指标可能被清空。
+> 使用本插件自动整理后，也请停用 Linter 中重复的自动整理功能。[共存设置](docs/INSTALL.md#与-linter-for-zotero--format-metadata-共存)
 
 ## 开发
 
-Node.js 22+、Python 3.10+；本项目不需要 npm/pip 第三方依赖。
+Node.js 22+、Python 3.10+，无额外 npm/pip 依赖。
 
 ```sh
 node --test tests/core.test.cjs tests/metadata.test.cjs tests/plugin.test.cjs
@@ -48,23 +44,14 @@ python scripts/build.py
 python scripts/export-source.py
 ```
 
-| 文件 | 用途 |
-| --- | --- |
-| `src/metadata.js` | 独立整理规则、缩写索引、重复提示与逐字段备份 |
-| `src/core.js` | 指标校验、匹配和索书号保护 |
-| `src/plugin.js` | 事件顺序、精确预览计划、事务保存和导入 |
-| `metadata-preview.*` | 整理/恢复/重复检查窗口 |
-| `tests/metadata.test.cjs` | 独立规则测试，使用合成示例 |
-| `tests/plugin.test.cjs` | 插件集成、竞争条件及回滚测试 |
-
-[开发说明](docs/DEVELOPMENT.md) · [测试说明](docs/TESTING.md) · [修改记录](CHANGELOG.md) · [数据说明](data/README.md)
+`src/core.js` 负责指标匹配，`src/metadata.js` 负责整理及 DOI 返回字段的校验，`src/plugin.js` 负责 Zotero 接口、菜单、查询和事务写入。
+[开发说明](docs/DEVELOPMENT.md) · [测试说明](docs/TESTING.md) · [修改记录](CHANGELOG.md)
 
 ## 来源与许可证
 
-采用 [MIT](LICENSE)。元数据整理按本项目需求独立实现，未移植 Linter 的源码、测试、词表、图标或数据资源；不声称覆盖 Linter 的全部功能。
-功能需求参考 [northword/zotero-format-metadata](https://github.com/northword/zotero-format-metadata)，其软件采用 AGPL，感谢原作者的功能设计。
-指标显示功能参考 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank) 的使用流程，由本项目面向 Zotero 10 重新实现。
+软件采用 [MIT](LICENSE)，不包含第三方指标数据的再分发许可。
+指标显示流程参考 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank)，由本项目面向 Zotero 10 重新实现。
+元数据需求参考 [northword/zotero-format-metadata](https://github.com/northword/zotero-format-metadata)，未移植其源码、测试、词表、图标或数据；不声称覆盖 Linter 全部功能。
+DOI 查询调用已安装 Zotero 的原生查询器，不随本项目分发其实现。[来源说明](NOTICE.md)
 
-[来源与许可范围](NOTICE.md) · [贡献指南](CONTRIBUTING.md)。软件 MIT 许可不涵盖另行取得的第三方指标数据。
-
-维护与需求：**hanxiangmin**。代码实现、测试及文档协助：**OpenAI Codex**。
+维护与需求：**hanxiangmin**。代码、测试与文档协助：**OpenAI Codex**。

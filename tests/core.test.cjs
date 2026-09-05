@@ -5,15 +5,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const {
-  Catalog, validateDataset, normalizeISSNs, readState,
-  planUpdate, planRestore, STATE_PREFIX
+  Catalog, validateDataset, normalizeISSNs, planUpdate
 } = require("../src/core.js");
 
 // Small synthetic fixtures exercise behavior; the bundled-data test below
 // separately checks the actual data shipped with the plugin.
 const JOURNAL = "Example Journal of Tests";
 const ISSN = "1234-5679";
-const NOW = "2026-08-28T01:00:00.000Z";
 const CVPR = "IEEE/CVF Conference on Computer Vision and Pattern Recognition";
 
 function dataset(kind, records, overrides = {}) {
@@ -73,44 +71,6 @@ function metricCatalog({ rank = null, jif = null, quartile = null, division = nu
   }
   if (division !== null) datasets.push(dataset("cas", [casJournal({ division, top: false })]));
   return new Catalog(datasets);
-}
-
-function applyPlan(item, plan) {
-  assert.equal(plan.action, "write", JSON.stringify(plan));
-  return { ...item, callNumber: plan.callNumber, extra: plan.extra };
-}
-
-function stateLine(overrides = {}) {
-  return STATE_PREFIX + JSON.stringify({
-    v: 1, original: "Original shelf mark", last: "A|20.4|Q1|1区TOP",
-    addedSeparator: true, ...overrides
-  });
-}
-
-function legacyManagedItem(original, result, last) {
-  const addedSeparator = Boolean(original.extra && !original.extra.endsWith("\n"));
-  return {
-    ...original, callNumber: last,
-    extra: original.extra + (addedSeparator ? "\n" : "") + stateLine({
-      original: original.callNumber, last, addedSeparator,
-      updatedAt: NOW, provenance: result.provenance, quartilePolicy: result.policy
-    })
-  };
-}
-
-function legacyRefreshCases() {
-  return [
-    [{ rank: "C" }, "C|—|—|—", "C"],
-    [{ jif: 3.6, quartile: "Q1", division: 3 }, "—|3.6|Q1|3区", "3.6|Q1|3区"],
-    [{ rank: "B", quartile: "Q2" }, "B|—|Q2|—", "B|Q2"],
-    [{}, "—|—|—|—", ""]
-  ].map(([metrics, last, expected]) => ({
-    // An all-missing legacy result can be refreshed only when the catalog is
-    // available and the venue is unknown, not when the data files are absent.
-    result: Object.keys(metrics).length ? metricCatalog(metrics).lookup(journal()) :
-      fullCatalog().lookup(journal({ publicationTitle: "Unknown legacy venue" })),
-    last, expected
-  }));
 }
 
 test("the optional real TPAMI data, never a mock, produces A|20.4|Q1|1区TOP", t => {
@@ -314,178 +274,6 @@ test("unknown venues and preprints never produce a write plan", () => {
   assert.deepEqual(item, { callNumber: "", extra: "Citation Key: untouched" });
 });
 
-test("a managed journal changed to an unknown venue clears stale metrics and retains its original backup", () => {
-  const catalog = fullCatalog();
-  const original = { callNumber: "QA76.9 original shelf mark", extra: "DOI: example\nCitation Key: keep" };
-  const managed = applyPlan(original, planUpdate(original, catalog.lookup(journal()), {
-    allowOverwrite: true, now: NOW
-  }));
-  const unknown = catalog.lookup(journal({ publicationTitle: "Completely Unknown Replacement Journal" }));
-  assert.equal(unknown.hasData, false);
-
-  const updated = applyPlan(managed, planUpdate(managed, unknown, { now: "2026-08-29T01:00:00Z" }));
-  assert.equal(updated.callNumber, "");
-  const backup = readState(updated.extra).state;
-  assert.equal(backup.original, original.callNumber);
-  assert.equal(backup.last, updated.callNumber);
-  assert.deepEqual(backup.provenance, {});
-  assert.equal(updated.extra.split(STATE_PREFIX).length - 1, 1);
-  assert.deepEqual(applyPlan(updated, planRestore(updated)), original);
-});
-
-test("an unknown venue on a first refresh does not write placeholders or create a backup", () => {
-  const unknown = fullCatalog().lookup(journal({ publicationTitle: "Completely Unknown Journal" }));
-  for (const callNumber of ["", "User shelf mark"]) {
-    const item = { callNumber, extra: "Citation Key: untouched" };
-    const before = { ...item };
-    assert.deepEqual(planUpdate(item, unknown, { allowOverwrite: true }), { action: "skip", reason: "no-data" });
-    assert.deepEqual(item, before);
-    assert.equal(readState(item.extra).state, null);
-  }
-});
-
-test("an unknown venue does not clear a managed call number that the user edited manually", () => {
-  const catalog = fullCatalog();
-  const original = { callNumber: "", extra: "Preserve user notes" };
-  const managed = applyPlan(original, planUpdate(original, catalog.lookup(journal()), { now: NOW }));
-  managed.callNumber = "User corrected shelf mark";
-  const before = { ...managed };
-  const unknown = catalog.lookup(journal({ publicationTitle: "Completely Unknown Replacement Journal" }));
-
-  assert.deepEqual(planUpdate(managed, unknown, { allowOverwrite: true }), {
-    action: "skip", reason: "manually-edited"
-  });
-  assert.deepEqual(managed, before);
-});
-
-test("missing datasets protect managed metrics even when the remaining catalog cannot find the venue", () => {
-  const original = { callNumber: "QA76 original shelf mark", extra: "Citation Key: preserved" };
-  const managed = applyPlan(original, planUpdate(original, fullCatalog().lookup(journal()), {
-    allowOverwrite: true, now: NOW
-  }));
-  const availableCases = [
-    [],
-    [dataset("jcr", [jcrJournal()]), dataset("cas", [casJournal()])],
-    [dataset("ccf", [ccfJournal()]), dataset("cas", [casJournal()])],
-    [dataset("ccf", [ccfJournal()]), dataset("jcr", [jcrJournal()])]
-  ];
-  for (const datasets of availableCases) {
-    const catalog = new Catalog(datasets);
-    for (const publicationTitle of [JOURNAL, "Unknown replacement venue"]) {
-      const result = catalog.lookup(journal({ publicationTitle }));
-      assert.deepEqual(new Set(result.availableKinds), new Set(datasets.map(data => data.kind)));
-      const before = { ...managed };
-      for (const allowOverwrite of [false, true]) {
-        assert.deepEqual(planUpdate(managed, result, { allowOverwrite }), {
-          action: "skip", reason: "data-unavailable"
-        }, `${result.availableKinds.join(", ") || "no data"}: ${publicationTitle}`);
-      }
-      assert.deepEqual(managed, before);
-      assert.deepEqual(applyPlan(managed, planRestore(managed)), original,
-        "Restoring the original call number does not require any metric datasets");
-    }
-  }
-});
-
-test("a partial catalog may refresh a managed item when all of its previously used dataset kinds remain available", () => {
-  const catalog = metricCatalog({ rank: "B" });
-  const original = { callNumber: "", extra: "Keep this note" };
-  const saved = applyPlan(original, planUpdate(original, catalog.lookup(journal()), { now: NOW }));
-  catalog.replace(dataset("ccf", [ccfJournal({ rank: "C" })]));
-  const result = catalog.lookup(journal());
-  assert.deepEqual(result.availableKinds, ["ccf"]);
-  const updated = applyPlan(saved, planUpdate(saved, result));
-  assert.equal(updated.callNumber, "C");
-  assert.deepEqual(applyPlan(updated, planRestore(updated)), original);
-});
-
-test("importing the missing dataset kinds resumes managed updates without replacing the original backup", () => {
-  const original = { callNumber: "Original shelf mark", extra: "DOI: preserve\r\nCitation Key: keep\r\n" };
-  const managed = applyPlan(original, planUpdate(original, fullCatalog().lookup(journal()), {
-    allowOverwrite: true, now: NOW
-  }));
-  const catalog = new Catalog([]);
-  for (const data of [
-    dataset("jcr", [jcrJournal({ jif: 21.1 })]),
-    dataset("ccf", [ccfJournal({ rank: "B" })])
-  ]) {
-    assert.deepEqual(planUpdate(managed, catalog.lookup(journal())), {
-      action: "skip", reason: "data-unavailable"
-    });
-    catalog.replace(data);
-  }
-  assert.deepEqual(planUpdate(managed, catalog.lookup(journal())), {
-    action: "skip", reason: "data-unavailable"
-  });
-  catalog.replace(dataset("cas", [casJournal({ division: 2, top: false })]));
-  const result = catalog.lookup(journal());
-  const updated = applyPlan(managed, planUpdate(managed, result));
-  assert.equal(updated.callNumber, "B|21.1|Q1|2区");
-  assert.equal(readState(updated.extra).state.original, original.callNumber);
-  assert.deepEqual(planUpdate(updated, result), { action: "skip", reason: "unchanged" });
-  assert.deepEqual(applyPlan(updated, planRestore(updated)), original);
-});
-
-test("older loaded JCR data cannot replace or clear a newer managed result", () => {
-  const original = { callNumber: "QA76 original shelf mark", extra: "Citation Key: keep\nUser notes" };
-  const managed = applyPlan(original, planUpdate(original,
-    metricCatalog({ jif: 20.4, quartile: "Q1" }).lookup(journal()), {
-      allowOverwrite: true, now: NOW
-    }));
-  const before = { ...managed };
-  const older = new Catalog([dataset("jcr", [jcrJournal({ jif: 9 })], {
-    edition: 2025, metricYear: 2024
-  })]);
-
-  for (const publicationTitle of [JOURNAL, "Unknown replacement venue"]) {
-    const result = older.lookup(journal({ publicationTitle }));
-    assert.equal(result.jcrMetricYear, 2024,
-      "The loaded source year remains known even when its journal does not match");
-    assert.equal(Boolean(result.provenance.jcr), publicationTitle === JOURNAL);
-    for (const allowOverwrite of [false, true]) {
-      assert.deepEqual(planUpdate(managed, result, { allowOverwrite }), {
-        action: "skip", reason: "outdated-data"
-      }, publicationTitle);
-    }
-    assert.deepEqual(managed, before, "A rejected downgrade leaves the complete saved backup unchanged");
-  }
-  assert.deepEqual(applyPlan(managed, planRestore(managed)), original);
-});
-
-test("an item without saved metrics may still use an older JCR source", () => {
-  const original = { callNumber: "", extra: "Citation Key: new-item" };
-  const catalog = new Catalog([dataset("jcr", [jcrJournal({ jif: 9 })], {
-    edition: 2025, metricYear: 2024
-  })]);
-  const updated = applyPlan(original, planUpdate(original, catalog.lookup(journal()), { now: NOW }));
-  assert.equal(updated.callNumber, "9|Q1");
-  assert.equal(readState(updated.extra).state.provenance.jcr.metricYear, 2024);
-});
-
-test("same-year and newer JCR sources can refresh or clear managed metrics without replacing the original backup", () => {
-  const original = { callNumber: "Original shelf mark", extra: "DOI: preserve\r\nCitation Key: keep\r\n" };
-  const managed = applyPlan(original, planUpdate(original,
-    metricCatalog({ jif: 20.4, quartile: "Q1" }).lookup(journal()), {
-      allowOverwrite: true, now: NOW
-    }));
-
-  for (const metricYear of [2025, 2026]) {
-    const catalog = new Catalog([dataset("jcr", [jcrJournal({ jif: 21.1 })], {
-      edition: metricYear + 1, metricYear
-    })]);
-    for (const publicationTitle of [JOURNAL, "Unknown replacement venue"]) {
-      const matched = publicationTitle === JOURNAL;
-      const result = catalog.lookup(journal({ publicationTitle }));
-      const updated = applyPlan(managed, planUpdate(managed, result));
-      assert.equal(updated.callNumber, matched ? "21.1|Q1" : "");
-      const state = readState(updated.extra).state;
-      assert.equal(state.original, original.callNumber);
-      assert.equal(state.provenance.jcr?.metricYear, matched ? metricYear : undefined);
-      assert.deepEqual(applyPlan(updated, planRestore(updated)), original);
-    }
-  }
-});
-
 test("JIF <0.1 and actual zero remain visible while missing JIF produces empty text", () => {
   for (const [record, field, text, hasData] of [
     [jcrJournal({ jif: null, jifDisplay: "<0.1", quartiles: [] }), "<0.1", "<0.1", true],
@@ -533,180 +321,6 @@ test("CAS TOP is independent of division, and unknown TOP is not fabricated", ()
     assert.equal(result.text, display);
     assert.equal(result.provenance.cas.top, top);
   }
-});
-
-test("existing call numbers are protected by default and opt-in overwrite keeps the original backup", () => {
-  const result = fullCatalog().lookup(journal());
-  const original = { callNumber: "QA76.9 — 架位 12", extra: "DOI: 10.0000/example\nCitation Key: mykey" };
-  assert.deepEqual(planUpdate(original, result), { action: "skip", reason: "existing-call-number" });
-
-  const saved = applyPlan(original, planUpdate(original, result, { allowOverwrite: true, now: NOW }));
-  const backup = readState(saved.extra).state;
-  assert.equal(backup.original, original.callNumber);
-  assert.equal(backup.last, result.text);
-  const restored = applyPlan(saved, planRestore(saved));
-  assert.deepEqual(restored, original);
-});
-
-test("backup and restore preserve unrelated Extra content, including existing newline styles", () => {
-  const result = fullCatalog().lookup(journal());
-  for (const extra of ["", "User notes without newline", "DOI: example\n", "DOI: example\r\nCitation Key: x\r\n"]) {
-    const original = { callNumber: "", extra };
-    const saved = applyPlan(original, planUpdate(original, result, { now: NOW }));
-    assert.ok(saved.extra.startsWith(extra));
-    assert.equal(saved.extra.split(STATE_PREFIX).length - 1, 1);
-    assert.deepEqual(applyPlan(saved, planRestore(saved)), original);
-  }
-});
-
-test("repeated updates retain the first call-number backup and do not duplicate metadata", () => {
-  const catalog = fullCatalog();
-  const original = { callNumber: "Original shelf number", extra: "My note" };
-  const first = applyPlan(original, planUpdate(original, catalog.lookup(journal()), { allowOverwrite: true, now: NOW }));
-  catalog.replace(dataset("jcr", [jcrJournal({ jif: 21.1 })]));
-  const second = applyPlan(first, planUpdate(first, catalog.lookup(journal()), { now: "2026-08-29T01:00:00Z" }));
-  assert.equal(second.callNumber, "A|21.1|Q1|1区TOP");
-  assert.equal(readState(second.extra).state.original, original.callNumber);
-  assert.equal(second.extra.split(STATE_PREFIX).length - 1, 1);
-  assert.deepEqual(applyPlan(second, planRestore(second)), original);
-});
-
-test("ordinary refresh migrates 3.0.0 display state once and preserves backups, Extra, and restoration", () => {
-  const migrationTime = "2026-08-29T01:00:00.000Z";
-  const appendedNotes = "\nUser-added after 3.0.0: keep $& and 原始笔记\r\n";
-  for (const { result, last, expected } of legacyRefreshCases()) {
-    for (const extra of ["", "Citation Key: keep\nUser note without final newline", "DOI: example\r\nCitation Key: keep\r\n"]) {
-      const original = { callNumber: "QA76.9 — 原索书号", extra };
-      const legacy = legacyManagedItem(original, result, last);
-      legacy.extra += appendedNotes;
-      const before = { ...legacy };
-      const label = `${last} -> ${JSON.stringify(expected)}, Extra=${JSON.stringify(extra)}`;
-
-      // The old state uses the same metrics and provenance: only its display
-      // changes, so normal refresh must not require an overwrite opt-in.
-      const migrated = applyPlan(legacy, planUpdate(legacy, result, { now: migrationTime }));
-      assert.equal(migrated.callNumber, expected, label);
-      const backup = readState(migrated.extra).state;
-      assert.equal(backup.original, original.callNumber, label);
-      assert.equal(backup.last, expected, label);
-      assert.equal(backup.updatedAt, migrationTime, label);
-      assert.deepEqual(backup.provenance, readState(legacy.extra).state.provenance, label);
-      assert.equal(backup.quartilePolicy, result.policy, label);
-      assert.equal(migrated.extra.split(STATE_PREFIX).length - 1, 1, label);
-      assert.equal(migrated.extra.startsWith(extra), true, label);
-      assert.equal(migrated.extra.endsWith(appendedNotes), true, label);
-      assert.deepEqual(legacy, before, "Planning must not mutate the legacy item");
-
-      assert.deepEqual(planUpdate(migrated, result, { now: "2026-08-30T01:00:00.000Z" }), {
-        action: "skip", reason: "unchanged"
-      }, label);
-      assert.equal(readState(migrated.extra).state.updatedAt, migrationTime, label);
-      assert.deepEqual(applyPlan(migrated, planRestore(migrated)), {
-        ...original, extra: extra + appendedNotes
-      }, label);
-    }
-  }
-});
-
-test("manual changes to legacy call numbers block migration and restore even if they match the new compact text", () => {
-  for (const { result, last, expected } of legacyRefreshCases()) {
-    const original = { callNumber: "Original shelf mark", extra: "Retain user notes" };
-    for (const callNumber of ["User corrected shelf mark", expected]) {
-      const edited = { ...legacyManagedItem(original, result, last), callNumber };
-      const before = { ...edited };
-      for (const allowOverwrite of [false, true]) {
-        assert.deepEqual(planUpdate(edited, result, { allowOverwrite }), {
-          action: "skip", reason: "manually-edited"
-        }, `${last} manually changed to ${JSON.stringify(callNumber)}`);
-      }
-      assert.deepEqual(planRestore(edited), { action: "skip", reason: "manually-edited" });
-      assert.deepEqual(edited, before);
-    }
-  }
-});
-
-test("old-looking call numbers without plugin state are not automatically migrated", () => {
-  for (const { result, last } of legacyRefreshCases()) {
-    if (!result.hasData) continue;
-    const unmanaged = { callNumber: last, extra: "Citation Key: user-owned" };
-    const before = { ...unmanaged };
-    assert.deepEqual(planUpdate(unmanaged, result), { action: "skip", reason: "existing-call-number" });
-    assert.deepEqual(planRestore(unmanaged), { action: "skip", reason: "no-backup" });
-    assert.deepEqual(unmanaged, before);
-  }
-});
-
-test("restoring removes only the plugin record and retains Extra notes added afterwards", () => {
-  const original = { callNumber: "", extra: "DOI: example\nOriginal note" };
-  const saved = applyPlan(original, planUpdate(original, fullCatalog().lookup(journal()), { now: NOW }));
-  saved.extra += "\nUser-added: keep this note";
-  const restored = applyPlan(saved, planRestore(saved));
-  assert.equal(restored.callNumber, "");
-  assert.equal(restored.extra, original.extra + "\nUser-added: keep this note");
-});
-
-test("manual call-number edits block both refresh and restore, even with overwrite enabled", () => {
-  const result = fullCatalog().lookup(journal());
-  const saved = applyPlan({ callNumber: "", extra: "Keep" }, planUpdate({ callNumber: "", extra: "Keep" }, result));
-  saved.callNumber = "User corrected shelf number";
-  const before = { ...saved };
-  assert.deepEqual(planUpdate(saved, result, { allowOverwrite: true }), { action: "skip", reason: "manually-edited" });
-  assert.deepEqual(planRestore(saved), { action: "skip", reason: "manually-edited" });
-  assert.deepEqual(saved, before);
-});
-
-test("only an explicit repair may restore an externally cleared managed result", () => {
-  const result = fullCatalog().lookup(journal());
-  const original = { callNumber: "", extra: "Keep" };
-  const managed = applyPlan(original, planUpdate(original, result, { now: NOW }));
-  const cleared = { ...managed, callNumber: "" };
-
-  assert.deepEqual(planUpdate(cleared, result), { action: "skip", reason: "manually-edited" });
-  const repaired = applyPlan(cleared, planUpdate(cleared, result, { repairCleared: true }));
-  assert.equal(repaired.callNumber, result.text);
-  assert.equal(readState(repaired.extra).state.original, original.callNumber);
-
-  const changedResult = metricCatalog({ rank: "A", jif: 21.1, quartile: "Q1", division: 1 }).lookup(journal());
-  assert.notEqual(changedResult.text, result.text);
-  assert.deepEqual(planUpdate(cleared, changedResult, { repairCleared: true }), {
-    action: "skip", reason: "manually-edited"
-  }, "repair must not turn an empty manual edit into a metric refresh");
-  const refreshed = applyPlan(cleared, planUpdate(cleared, changedResult, {
-    repairCleared: true, allowOverwrite: true
-  }));
-  assert.equal(refreshed.callNumber, changedResult.text,
-    "the confirmed overwrite path may refresh a cleared value with changed metrics");
-  assert.equal(readState(refreshed.extra).state.original, original.callNumber);
-
-  const manual = { ...managed, callNumber: "User shelf mark" };
-  assert.deepEqual(planUpdate(manual, result, { repairCleared: true }), {
-    action: "skip", reason: "manually-edited"
-  });
-});
-
-test("corrupt JSON, unsupported state schemas, and duplicate backup prefixes block all writes", () => {
-  const result = fullCatalog().lookup(journal());
-  const invalidExtras = [
-    STATE_PREFIX + "{broken JSON", STATE_PREFIX + "null",
-    stateLine({ v: 2 }), stateLine({ original: 42 }), stateLine({ last: null }),
-    stateLine() + "\n" + stateLine(),
-    stateLine() + "\r\n" + STATE_PREFIX + "{broken JSON"
-  ];
-  for (const extra of invalidExtras) {
-    const item = { callNumber: result.text, extra };
-    assert.equal(readState(extra).corrupt, true, extra);
-    assert.deepEqual(planUpdate(item, result, { allowOverwrite: true }), { action: "skip", reason: "invalid-backup" });
-    assert.deepEqual(planRestore(item), { action: "skip", reason: "invalid-backup" });
-    assert.equal(item.extra, extra);
-  }
-});
-
-test("a refresh with identical values and provenance is a no-op despite a new timestamp", () => {
-  const result = fullCatalog().lookup(journal());
-  const saved = applyPlan({ callNumber: "", extra: "" }, planUpdate({ callNumber: "", extra: "" }, result, { now: NOW }));
-  assert.deepEqual(planUpdate(saved, result, { now: "2026-09-01T00:00:00Z" }), { action: "skip", reason: "unchanged" });
-  assert.equal(readState(saved.extra).state.updatedAt, NOW);
-  assert.deepEqual(planRestore({ callNumber: "Shelf", extra: "No backup" }), { action: "skip", reason: "no-backup" });
 });
 
 test("CAS packages reject XR filenames even inside POSIX or Windows paths", () => {
@@ -758,4 +372,28 @@ test("a rejected replacement dataset leaves the previously working catalog intac
   const before = catalog.lookup(journal());
   assert.throws(() => catalog.replace(dataset("cas", [casJournal({ division: 4 })], { edition: 2024 })));
   assert.deepEqual(catalog.lookup(journal()), before);
+});
+
+test("one manual update replaces existing metrics or shelf marks without touching Extra", () => {
+  for (const callNumber of ["", "QA76", "C|—|—|—", "user correction"]) {
+    const item = journal({ callNumber, extra: 'User notes\r\nZotero Scholar Manual: {bad' });
+    const before = { ...item };
+    const plan = planUpdate(item, fullCatalog().lookup(item));
+    assert.deepEqual(plan, { action: "write", callNumber: "A|20.4|Q1|1区TOP" });
+    assert.deepEqual(item, before);
+    assert.equal(Object.hasOwn(plan, "extra"), false);
+  }
+});
+
+test("automatic updates only fill empty call numbers and repeated updates do not write", () => {
+  const result = fullCatalog().lookup(journal());
+  assert.equal(planUpdate({callNumber:"C"}, result, {allowOverwrite:false}).reason, "existing-call-number");
+  assert.equal(planUpdate({callNumber:""}, result, {allowOverwrite:false}).action, "write");
+  assert.equal(planUpdate({callNumber:result.text}, result).reason, "unchanged");
+});
+
+test("missing or unmatched data never clears values, even during explicit updates", () => {
+  for (const result of [new Catalog([]).lookup(journal()), fullCatalog().lookup(journal({publicationTitle:"Unknown"}))]) {
+    assert.equal(planUpdate({callNumber:"C",extra:"old record"}, result).reason, "no-data");
+  }
 });

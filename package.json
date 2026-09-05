@@ -1,9 +1,9 @@
 {
   "name": "zotero10-scholar",
-  "version": "3.1.1",
+  "version": "3.1.2",
   "license": "MIT",
   "private": true,
-  "description": "Zotero 10 学术插件：CCF A/B/C 会议与期刊评级、JCR 分区、影响因子 JIF、2025 中科院期刊分区/TOP；索书号显示与备份恢复。Offline academic journal and conference rankings; import your own data.",
+  "description": "Zotero 10：元数据整理、手动 DOI 信息更新、CCF/影响因子/JCR/2025 中科院分区；三个入口，直接更新。",
   "keywords": [
     "zotero",
     "zotero-plugin",

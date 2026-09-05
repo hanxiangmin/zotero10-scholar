@@ -4,24 +4,13 @@ const test = require("node:test");
 const M = require("../src/metadata.js");
 const item = fields => ({ itemType: "journalArticle", title: "A study of fictional methods", DOI: "", pages: "", volume: "", issue: "", language: "en", journalAbbreviation: "", callNumber: "QA76", extra: "User notes\r\nCitation Key: keep", ...fields });
 const table = records => ({ schemaVersion: 1, kind: "journal-abbreviations", source: "Invented test-only titles", records });
-const apply = (before, plan) => ({ ...before, ...plan.fields, extra: plan.extra });
+const apply = (before, plan) => ({ ...before, ...plan.fields });
 
 test("DOI cleanup preserves legal suffix punctuation and avoids inventing identifiers", () => {
   assert.equal(M.cleanDOI("  https://doi.org/10.12345/ABC(7).x "), "10.12345/ABC(7).x");
   assert.equal(M.cleanDOI("doi: 10.5555/a;b"), "10.5555/a;b");
   for (const value of ["doi: unknown", "10.12/a", "https://example.org/10.1234/x", "10.1234/a b", "https://doi.org/10.1234/x?tracking=1"])
     assert.equal(M.cleanDOI(value), value);
-});
-
-test("cleanup is idempotent, backs up original values, and preserves rank plus Extra", () => {
-  const before = item({ title: "  BRCA1  and  p53 in MACH-Net  ", DOI: "doi:10.12345/test", pages: "S10 - S19", volume: "002", issue: "03" });
-  const plan = M.plan(before);
-  assert.deepEqual(plan.fields, { title: "BRCA1 and p53 in MACH-Net", DOI: "10.12345/test", pages: "S10–S19", volume: "2", issue: "3" });
-  assert.ok(plan.extra.startsWith(before.extra));
-  const after = apply(before, plan);
-  assert.equal(after.callNumber, "QA76");
-  assert.equal(M.plan(after).action, "skip");
-  assert.deepEqual(apply(after, M.restore(after)), before);
 });
 
 test("rich text, equations, article numbers, Roman volumes and special issues remain untouched", () => {
@@ -59,67 +48,9 @@ test("conflicting names do not produce guessed abbreviations and no data never c
   assert.equal(M.plan(item({ journalAbbreviation: "Keep" })).action, "skip");
 });
 
-test("per-field manual edits survive cleanup and partial restore", () => {
-  const before = item({ DOI: "doi:10.1234/test", volume: "002" });
-  const after = apply(before, M.plan(before));
-  after.DOI = "doi:10.1234/manually-edited";
-  assert.equal(M.plan(after).fields.DOI, undefined);
-  const restored = apply(after, M.restore(after));
-  assert.equal(restored.volume, "002");
-  assert.equal(restored.DOI, after.DOI);
-  assert.deepEqual(Object.keys(M.readState(restored.extra).state.fields), ["DOI"]);
-});
-
-test("corrupt, duplicate, unknown-version or unexpected-field backup blocks writes", () => {
-  const valid = M.plan(item({ volume: "002" })).extra.split(M.PREFIX)[1];
-  for (const value of ["{bad", '{"v":2}', JSON.stringify({v:1,addedSeparator:true,fields:{callNumber:{original:"x",last:"y"}}})]) {
-    const before = item({ volume: "002", extra: M.PREFIX + value });
-    assert.equal(M.plan(before).reason, "invalid-backup"); assert.equal(M.restore(before).reason, "invalid-backup");
-  }
-  assert.equal(M.plan(item({ extra: M.PREFIX + valid + "\n" + M.PREFIX + valid })).reason, "invalid-backup");
-});
-
 test("all rules can be disabled without modifying metadata or backups", () => {
   assert.equal(M.plan(item({ title: "  Test   title ", DOI: "doi:10.1234/x", volume: "01", language: "" }),
     Object.fromEntries(Object.keys(M.DEFAULTS).map(key => [key, false]))).action, "skip");
-});
-
-test("reviewed manual edits keep independent backups, persist locks and restore their first values", () => {
-  const before = item({ DOI: "doi:10.1234/original", volume: "002" });
-  const cleaned = apply(before, M.plan(before));
-  const manual = apply(cleaned, M.planManual(cleaned, { DOI: "doi:10.1234/manual", volume: "0003", language: "fr", callNumber: "C" }));
-  assert.equal(M.readManual(manual.extra).state.fields.callNumber.original, "QA76");
-  assert.deepEqual(M.readState(manual.extra), M.readState(cleaned.extra));
-  assert.equal(M.plan(manual).action, "skip");
-  assert.equal(M.restore(manual).action, "skip");
-  const revised = apply(manual, M.planManual(manual, { volume: "0004", callNumber: "" }));
-  assert.equal(M.readManual(revised.extra).state.fields.volume.original, "2");
-  assert.deepEqual(apply(revised, M.restoreManual(revised)), cleaned);
-  assert.deepEqual(apply(cleaned, M.restore(cleaned)), before);
-});
-
-test("manual restore protects subsequent outside edits and retains only their remaining backups", () => {
-  const before = item({ callNumber: "QA76" });
-  const manual = apply(before, M.planManual(before, { language: "fr", callNumber: "B" }));
-  const outside = { ...manual, callNumber: "My later shelf" };
-  const restored = apply(outside, M.restoreManual(outside));
-  assert.equal(restored.language, "en");
-  assert.equal(restored.callNumber, outside.callNumber);
-  assert.deepEqual(Object.keys(M.readManual(restored.extra).state.fields), ["callNumber"]);
-});
-
-test("manual plans reject invalid fields, nonstrings, oversized input and damaged backup namespaces", () => {
-  for (const fields of [{ extra: "erase" }, { creators: "x" }, { DOI: null }, { title: "x".repeat(10001) }]) {
-    assert.throws(() => M.planManual(item({}), fields));
-  }
-  for (const prefix of [M.MANUAL_PREFIX, M.PREFIX, "Zotero Scholar Rank: "]) {
-    assert.equal(M.planManual(item({ extra: prefix + "{bad" }), { callNumber: "C" }).reason, "invalid-backup");
-  }
-  const valid = M.planManual(item({}), { callNumber: "C" }).extra.split(M.MANUAL_PREFIX)[1];
-  const corrupt = item({ extra: M.MANUAL_PREFIX + valid + "\n" + M.MANUAL_PREFIX + valid, DOI: "doi:10.1234/x" });
-  assert.equal(M.plan(corrupt).reason, "invalid-backup");
-  assert.equal(M.restoreManual(corrupt).reason, "invalid-backup");
-  assert.equal(M.planManual(item({}), { callNumber: "QA76" }).action, "skip");
 });
 
 test("duplicate hints are library scoped, normalize DOI and require manual review for titles", () => {
@@ -135,4 +66,37 @@ test("duplicate hints are library scoped, normalize DOI and require manual revie
   assert.deepEqual(hints.map(h => h.id), [2, 5]);
   assert.match(hints[0].reason, /DOI/); assert.match(hints[1].reason, /人工/);
   assert.deepEqual(lookup(items[2]), []);
+});
+
+test("cleanup uses the current fields, stays idempotent and never creates or changes Extra", () => {
+  const before = item({title:"  BRCA1  and p53 ",DOI:"doi:10.1234/x",volume:"002",extra:'Zotero Scholar Metadata: {bad\nUser notes'});
+  const plan = M.plan(before), after = apply(before, plan);
+  assert.equal(after.title, "BRCA1 and p53"); assert.equal(after.DOI,"10.1234/x"); assert.equal(after.volume,"2");
+  assert.equal(after.extra,before.extra); assert.equal(Object.hasOwn(plan,"extra"),false);
+  assert.equal(M.plan(after).action,"skip");
+  assert.equal(M.plan({...after,DOI:"doi:10.1234/later"}).fields.DOI,"10.1234/later");
+});
+
+test("DOI enrichment overwrites returned fields and authors but does not import protected item data", () => {
+  const before=item({DOI:"https://doi.org/10.1234/x",creators:[{creatorType:"author",firstName:"Old",lastName:"Author"}]});
+  const source={itemType:"journalArticle",DOI:"10.1234/X",title:"New title",publicationTitle:"New Journal",date:"2025",volume:"9",creators:[{creatorType:"author",firstName:"New",lastName:"Author"}],extra:"replace",callNumber:"C",tags:["unwanted"],attachments:[{}],notes:[{}]};
+  const plan=M.doiPlan(before,source);
+  assert.equal(plan.fields.title,"New title"); assert.equal(plan.fields.date,"2025");
+  assert.deepEqual(plan.creators,source.creators);
+  for (const field of ["extra","callNumber","tags","notes","attachments"]) assert.equal(Object.hasOwn(plan.fields,field),false);
+  assert.equal(Object.hasOwn(plan,"extra"),false);
+});
+
+test("DOI enrichment preserves unavailable fields and incomplete creator lists", () => {
+  const before=item({DOI:"10.1234/x",title:"Keep",pages:"1–9",creators:[{creatorType:"author",name:"Existing Group"}]});
+  const plan=M.doiPlan(before,{itemType:"journalArticle",DOI:before.DOI,title:"",pages:null,creators:[{creatorType:"author",lastName:"A"},{creatorType:"author"}]});
+  assert.equal(plan.action,"skip"); assert.equal(plan.creators,undefined);
+  assert.deepEqual(M.normalizeCreators([{creatorType:"author",fieldMode:1,lastName:"Study Group"}]),[{creatorType:"author",name:"Study Group"}]);
+});
+
+test("DOI enrichment rejects mismatched DOI and item type before planning any writes", () => {
+  const before=item({DOI:"10.1234/x"});
+  assert.equal(M.doiPlan(before,{itemType:"journalArticle",DOI:"10.1234/y",title:"Wrong"}).reason,"doi-mismatch");
+  assert.equal(M.doiPlan(before,{itemType:"book",DOI:before.DOI,title:"Wrong"}).reason,"doi-type-mismatch");
+  assert.equal(M.doiPlan({...before,DOI:"not a DOI"},{}).reason,"invalid-doi");
 });

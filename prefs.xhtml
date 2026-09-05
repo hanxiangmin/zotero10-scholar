@@ -1,67 +1,47 @@
 <vbox xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
       xmlns:html="http://www.w3.org/1999/xhtml" onload="Zotero_Preferences.getScope('zotero10-scholar-settings').ScholarRankPrefs.init(window)">
   <groupbox>
-    <label><html:h2>Scholar Rank · Zotero 10</html:h2></label>
-    <description>索书号格式：CCF | 年度影响因子 | JCR 分区 | 中科院大类分区及 TOP</description>
-    <description>只显示有数据的指标，缺失项及对应分隔符省略；仅有 CCF C 时显示 C。实际影响因子 0 和 &lt;0.1 保留。</description>
-    <html:p id="zsr10-version-summary" style="line-height:1.7;white-space:pre-wrap"></html:p>
-    <description>全部查询在本机完成。公开版不附带第三方指标数据，请自行导入有权使用的数据包；中科院固定为 2025 升级版大类分区，不读取新锐 XR 数据。</description>
-    <description>“最新”以数据版本为准，不会联网实时刷新。更新年份后需导入新数据包或重新打包插件。</description>
+    <label><html:h2>Scholar Rank</html:h2></label>
+    <description>整理元数据 · 根据 DOI 更新文献信息 · 更新分区指标</description>
+    <html:p id="zsr10-selection-summary"></html:p>
+    <html:div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
+      <html:button id="zsr10-metadata">整理元数据</html:button>
+      <html:button id="zsr10-doi">根据 DOI 更新</html:button>
+      <html:button id="zsr10-ranks">更新分区指标</html:button>
+    </html:div>
+    <html:p id="zsr10-operation-status" role="status"></html:p>
+    <description>先在 Zotero 主窗口选中文献，点击即可更新。元数据整理与分区更新分开执行，不再提供额外的预览、覆盖、备份或恢复步骤。</description>
+    <description>根据 DOI 更新仅手动触发：联网查询题目、作者、期刊、日期等文献信息，成功返回的非空字段直接覆盖旧值；查询失败、DOI 不一致或未返回的字段保持原样。不改附件、笔记、标签、Extra 和索书号。</description>
+    <description>更新分区指标会直接替换选中条目的索书号；没有匹配数据时保留原值。误操作可用 Zotero 自带撤销。</description>
   </groupbox>
   <groupbox>
     <label><html:h3>自动处理</html:h3></label>
-    <html:label style="display:flex;gap:8px;margin:10px 0"><html:input id="zsr10-metadata-auto" type="checkbox"/> 自动整理元数据</html:label>
-    <html:label style="display:flex;gap:8px;margin:10px 0"><html:input id="zsr10-auto-new" type="checkbox"/> 自动更新指标（CCF / IF / JCR / 中科院）</html:label>
-    <html:p id="zsr10-auto-status" role="status" style="font-weight:600"></html:p>
-    <description>开关即时保存，仅处理之后新增的期刊或会议条目，不会批量改动已有文献。都开启时先整理，再用已导入的数据匹配指标；不会联网下载数据。</description>
-    <description>默认均关闭。自动处理保留已有索书号、手动修改和本插件的人工设定。已存在的文献请使用下方手动操作。</description>
+    <html:label style="margin:8px 0"><html:input id="zsr10-metadata-auto" type="checkbox"/> 新增条目时自动整理元数据</html:label>
+    <html:label style="margin:8px 0"><html:input id="zsr10-auto-new" type="checkbox"/> 新增条目时自动更新分区指标</html:label>
+    <html:p id="zsr10-auto-status" role="status"></html:p>
+    <description>开关即时保存，默认关闭，只处理之后新增的期刊/会议条目。两者都开启时先整理再匹配指标。自动模式仅填充空索书号；已有条目可点击“更新分区指标”直接覆盖。</description>
+    <description>自动处理不联网查询 DOI，也不自动下载年度指标表。</description>
   </groupbox>
   <groupbox>
-    <label><html:h3>手动操作 · 当前选中条目</html:h3></label>
-    <html:p id="zsr10-selection-summary" role="status"></html:p>
-    <description>先在 Zotero 主窗口选中文献，再点下面的按钮。只处理选中条目；预览时不写入。</description>
-    <html:div style="display:flex;flex-wrap:wrap;gap:8px;margin:12px 0">
-      <html:button id="zsr10-review">整理并更新指标…</html:button>
-      <html:button id="zsr10-ranks">仅更新指标…</html:button>
-      <html:button id="zsr10-manual">手动编辑与覆盖…</html:button>
-      <html:button id="zsr10-restore-manual">恢复手动覆盖…</html:button>
-      <html:button id="zsr10-restore-metadata">恢复元数据整理…</html:button>
-    </html:div>
-    <description>手动编辑可修改标题、DOI、页码、卷期、语言、期刊缩写和索书号指标。先核对右侧拟写入值，再确认覆盖；保留备份并保护人工设定。</description>
-  </groupbox>
-  <groupbox>
-    <label><html:h3>指标显示</html:h3></label>
-    <html:label for="zsr10-quartile">同一期刊属于多个 JCR 学科时：</html:label>
-    <html:select id="zsr10-quartile" style="margin:8px 0;max-width:380px">
-      <html:option value="best">显示最佳分区（默认，例如 Q1）</html:option>
-      <html:option value="worst">显示最低分区（例如 Q2）</html:option>
-      <html:option value="all">显示全部不同分区（例如 Q1/Q2）</html:option>
-    </html:select>
-    <description>需要替换已有索书号时，请使用“手动编辑与覆盖”，可填入自动建议后确认。</description>
-    <description>预印本、学位论文、附件、只读库不处理；会议仅显示已匹配的 CCF 等级。Workshops、Findings 等不套用主会议等级。</description>
-  </groupbox>
-  <groupbox>
-    <label><html:h3>数据包</html:h3></label>
-    <html:button id="zsr10-import" style="align-self:flex-start;padding:7px 12px">导入 JSON 数据包…</html:button>
-    <description>支持本项目脚本生成的 CCF / JCR / CAS JSON。先校验来源、体系、年份和字段再加载，不执行导入文件中的代码。</description>
-    <html:p id="zsr10-load-warning" style="white-space:pre-wrap;color:#a33"></html:p>
-  </groupbox>
-  <groupbox>
-    <label><html:h3>元数据整理</html:h3></label>
-    <description>右键 Scholar Rank → 整理元数据与更新指标，先预览再应用。标题保留大小写和专业词，富文本不自动改写。</description>
-    <html:div id="zsr10-metadata-rules" style="display:grid;gap:8px;margin:12px 0"></html:div>
-    <description>以上规则用于自动整理和普通手动整理。自动模式不弹出重复条目提示，可从右键菜单检查。</description>
+    <label><html:h3>整理规则</html:h3></label>
+    <html:div id="zsr10-metadata-rules" style="display:grid;gap:8px;margin:10px 0"></html:div>
+    <description>标题只整理空白，保留大小写和专业词，富文本不自动改写。语言仅保守补全空值；期刊缩写仅按本地导入表补全空值。</description>
     <html:p id="zsr10-abbreviation-summary" style="white-space:pre-wrap"></html:p>
     <html:button id="zsr10-import-abbreviations">导入期刊缩写 JSON…</html:button>
-    <description>缩写表未命中或存在歧义时跳过；已有缩写和语言不覆盖。语言识别仅保守识别中文/英文，其他语言请手动填写。</description>
-    <description>若同时启用 Linter，请停用其重复的自动整理，并关闭“清理被滥用的标准字段”。</description>
   </groupbox>
   <groupbox>
-    <label><html:h3>备份和撤销</html:h3></label>
-    <description>首次写入时，原索书号保存在 Extra 的 “Zotero Scholar Rank:” 行中，其他 Extra 内容保留。不要删除该行，否则将失去插件恢复依据。</description>
-    <description>支持 Zotero 的撤销/重做；右键“恢复原索书号”可跨重启恢复。手动修改过的结果不会自动覆盖。卸载插件不会自动修改条目。</description>
-    <description>整理字段的原值另存于 Extra 的 “Zotero Scholar Metadata:” 行；右键“恢复整理前的元数据”可逐字段恢复。请保留该行。</description>
-    <description>人工设定另存于 “Zotero Scholar Manual:” 行。恢复手动覆盖会回到本轮首次手动覆盖前，并解除相应字段的自动处理保护；之后又在其他界面改过的字段会跳过。连续覆盖的单步恢复可用 Zotero 撤销。</description>
-    <description>指标描述期刊或会议，不是对单篇论文质量的评定。</description>
+    <label><html:h3>分区指标与数据</html:h3></label>
+    <description>索书号：CCF | 年度影响因子 | JCR 分区 | 中科院大类分区及 TOP。只显示有数据的部分，例如 A|20.4|Q1|1区TOP 或 C。</description>
+    <html:label for="zsr10-quartile">多个 JCR 学科的显示方式：</html:label>
+    <html:select id="zsr10-quartile" style="margin:8px 0;max-width:380px">
+      <html:option value="best">最佳分区（例如 Q1）</html:option>
+      <html:option value="worst">最低分区（例如 Q2）</html:option>
+      <html:option value="all">全部不同分区（例如 Q1/Q2）</html:option>
+    </html:select>
+    <html:p id="zsr10-version-summary" style="white-space:pre-wrap;line-height:1.6"></html:p>
+    <html:button id="zsr10-import">导入指标 JSON 数据包…</html:button>
+    <html:p id="zsr10-load-warning" style="white-space:pre-wrap;color:#a33"></html:p>
+    <description>公开版不含第三方指标表，请导入有权使用的数据。年份以本地数据为准；中科院仅使用 2025 升级版大类分区，不读取新锐 XR 数据。会议只匹配 CCF 等级。</description>
+    <description>与 Linter 共存时，请关闭其“清理被滥用的标准字段”；使用本插件自动整理后，也请停用 Linter 中重复的自动整理功能。</description>
   </groupbox>
 </vbox>

@@ -11,8 +11,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "manifest.json", "bootstrap.js", "prefs.js", "prefs.xhtml", "prefs-pane.js",
-    "preview.xhtml", "preview.js", "src/core.js", "src/plugin.js",
-    "metadata-preview.xhtml", "metadata-preview.js", "src/metadata.js",
+    "src/core.js", "src/plugin.js",
+    "src/metadata.js",
     "locale/en-US/zotero10-scholar.ftl", "locale/zh-CN/zotero10-scholar.ftl",
     "assets/icon.svg", "LICENSE", "NOTICE.md", "data/README.md"
 ]
