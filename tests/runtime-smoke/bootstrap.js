@@ -581,6 +581,15 @@ async function runSmoke(rootURI) {
     }, true);
   }
 
+  await step("seed-synthetic-abbreviation-table", async () => {
+    await guard();
+    await IOUtils.makeDirectory(plugin.storageDir, { ignoreExisting: true });
+    const table = { schemaVersion: 1, kind: "journal-abbreviations", source: "Synthetic smoke table, not a real journal abbreviation",
+      records: [{ title: "Fictional Journal of Metadata Smoke", abbreviation: "Fict. Metadata" }] };
+    await IOUtils.writeJSON(PathUtils.join(plugin.storageDir, "abbreviations.json"), table);
+    return { source: table.source, count: 1 };
+  });
+
   await step("disable-enable-cleans-and-restores-menus", async () => {
     const beforeFields = await Promise.all(allItems().map(saved));
     const oldPlugin = plugin;
@@ -654,6 +663,119 @@ async function runSmoke(rootURI) {
         journal: fieldPair(journal), conference: fieldPair(conference) };
     });
   }
+
+  await step("metadata-settings-controls", async () => {
+    plugin.showSettings();
+    const preferences = await waitFor("Scholar Rank settings controls", () => {
+      const windows = Services.wm.getEnumerator(null);
+      while (windows.hasMoreElements()) {
+        const candidate = windows.getNext();
+        if (candidate.document?.getElementById("zsr10-metadata-rules")?.querySelectorAll("input").length === 7) return candidate;
+      }
+      return null;
+    }, 12000);
+    same(preferences.document.getElementById("zsr10-metadata-auto").checked, false, "Auto-cleanup default checkbox");
+    const checkbox = preferences.document.querySelectorAll("#zsr10-metadata-rules input")[1];
+    checkbox.click(); same(plugin.pref("metadata.doi"), false, "Rule control persists disabled preference");
+    checkbox.click(); same(plugin.pref("metadata.doi"), true, "Rule control can re-enable DOI cleanup");
+    check(preferences.document.getElementById("zsr10-abbreviation-summary").textContent.includes("1"), "Settings show abbreviation count");
+    check(preferences !== win, "Preferences expected in a separate window");
+    preferences.close();
+    return { controls: 7, defaultAuto: false, preferenceChange: true };
+  });
+
+  let metadataItem, metadataOriginal, metadataAfter;
+  const metadataFields = ["title", "DOI", "pages", "volume", "issue", "language", "journalAbbreviation", "callNumber", "extra"];
+  const metaSaved = async item => {
+    await item.reload(null, true);
+    return Object.fromEntries(metadataFields.map(field => [field, String(item.getField(field) || "")]));
+  };
+  const metadataDialog = async (items, options = {}) => {
+    const dialog = await plugin.previewMetadata(items, { win, ...options });
+    smokePreviews.add(dialog);
+    await waitFor("metadata preview DOM", () => !dialog.closed && dialog.document.getElementById("rows")?.children.length === items.length, 12000);
+    return dialog;
+  };
+
+  await step("metadata-preview-duplicates-and-apply", async () => {
+    same(plugin.abbreviations.count, 1, "Abbreviation table reloads after enable");
+    const fields = { title: "BRCA1  and p53 in a fictional study", DOI: "doi:10.12345/scholar-smoke", pages: "S10 - S19", volume: "002", issue: "03",
+      publicationTitle: "Fictional Journal of Metadata Smoke", callNumber: "USER-SHELF-KEEP", extra: "User note — preserve exactly" };
+    await guard();
+    metadataItem = new Zotero.Item("journalArticle");
+    metadataItem.libraryID = Zotero.Libraries.userLibraryID;
+    for (const [field, value] of Object.entries(fields)) metadataItem.setField(field, value);
+    await metadataItem.saveTx({ skipSelect: true });
+    const duplicate = new Zotero.Item("journalArticle"); duplicate.libraryID = metadataItem.libraryID;
+    duplicate.setField("title", "Another fictional title for duplicate testing"); duplicate.setField("DOI", "10.12345/scholar-smoke");
+    await duplicate.saveTx({ skipSelect: true });
+    metadataOriginal = await metaSaved(metadataItem);
+    const dialog = await metadataDialog([metadataItem]);
+    same(await metaSaved(metadataItem), metadataOriginal, "Metadata preview must not write");
+    check(!dialog.arguments[0].duplicateWarning, "Duplicate lookup raised an error");
+    check(dialog.arguments[0].rows[0].duplicates.some(candidate => candidate.id === duplicate.id), "DOI duplicate was not found");
+    await dialog.arguments[0].selectDuplicates([metadataItem.id, duplicate.id]);
+    same(win.ZoteroPane.getSelectedItems().map(item => item.id).sort(), [metadataItem.id, duplicate.id].sort(), "Duplicate selection");
+    Zotero.UndoHistory.clear();
+    dialog.document.getElementById("apply").click();
+    await waitFor("metadata applied through actual preview button", () => dialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
+    metadataAfter = await metaSaved(metadataItem);
+    same(metadataAfter.DOI, "10.12345/scholar-smoke", "Clean DOI");
+    same(metadataAfter.title, "BRCA1 and p53 in a fictional study", "Keep gene names and title case");
+    same(metadataAfter.pages, "S10–S19", "Clean page range");
+    same(metadataAfter.volume, "2", "Clean numeric volume");
+    same(metadataAfter.journalAbbreviation, "Fict. Metadata", "Fill imported abbreviation");
+    same(metadataAfter.language, "en", "Fill empty language conservatively");
+    same(metadataAfter.callNumber, "USER-SHELF-KEEP", "Keep original shelf mark");
+    check(metadataAfter.extra.includes("Zotero Scholar Metadata:"), "Missing metadata backup");
+    check(metadataAfter.extra.startsWith(metadataOriginal.extra), "Lost user Extra note");
+    check(dialog.document.getElementById("apply").disabled, "Double-apply button must be disabled");
+    dialog.close();
+    return { stored: metadataAfter, duplicateID: duplicate.id, appliedViaDOM: true };
+  }, true);
+
+  await step("metadata-native-undo-redo-and-no-repeat-write", async () => {
+    same(await Zotero.UndoHistory.undo(), true, "Undo metadata operation");
+    same(await metaSaved(metadataItem), metadataOriginal, "Undo all cleanup fields plus backup");
+    same(await Zotero.UndoHistory.redo(), true, "Redo metadata operation");
+    same(await metaSaved(metadataItem), metadataAfter, "Redo all cleanup fields plus backup");
+    const result = await apply(plugin, [metadataItem], { metadata: true });
+    same(result.written || 0, 0, "Repeat cleanup must not write");
+    return { undo: true, redo: true, noRepeatWrite: true };
+  });
+
+  await step("metadata-stale-preview-and-protected-restore", async () => {
+    const dialog = await metadataDialog([metadataItem], { restore: true });
+    metadataItem.setField("DOI", "10.12345/manual"); await metadataItem.saveTx({ skipSelect: true });
+    const result = await dialog.arguments[0].apply([metadataItem.id]);
+    same(result["manually-edited"], 1, "Stale preview skips changed item");
+    same(metadataItem.getField("volume"), "2", "Stale restore cannot write other fields");
+    dialog.close();
+    const current = await metadataDialog([metadataItem], { restore: true });
+    await current.arguments[0].apply([metadataItem.id]);
+    const restored = await metaSaved(metadataItem);
+    same(restored.DOI, "10.12345/manual", "Manual DOI survives restore");
+    same(restored.volume, metadataOriginal.volume, "Unedited volume restored");
+    same(restored.title, metadataOriginal.title, "Original title restored");
+    same(restored.callNumber, metadataOriginal.callNumber, "Restore leaves shelf mark intact");
+    current.close();
+    return { restored, partialRestore: true };
+  });
+
+  await step("metadata-auto-new-independent-toggle", async () => {
+    plugin.setPref("metadata.auto", true); plugin.setPref("autoNew", false);
+    try {
+      const item = new Zotero.Item("journalArticle"); item.libraryID = Zotero.Libraries.userLibraryID;
+      item.setField("title", "A fictional test of automatic cleanup"); item.setField("DOI", "doi:10.12345/automatic");
+      item.setField("callNumber", "AUTOMATIC-SHELF"); await item.saveTx({ skipSelect: true });
+      await waitFor("automatic metadata cleanup", () => !plugin.busy && item.getField("DOI") === "10.12345/automatic", 12000);
+      await plugin.pendingAuto;
+      await item.reload(null, true);
+      same(item.getField("callNumber"), "AUTOMATIC-SHELF", "Metadata-only auto mode keeps shelf mark");
+      same(item.getField("DOI"), "10.12345/automatic", "Automatic cleanup persisted");
+      return { automaticCleanup: true, independentToggle: true };
+    } finally { plugin.setPref("metadata.auto", false); }
+  });
 
   await step(smokeConfig.autoClose ? "final-preview-before-auto-close" : "leave-final-preview-for-inspection", async () => {
     plugin = Zotero.ScholarRank10;

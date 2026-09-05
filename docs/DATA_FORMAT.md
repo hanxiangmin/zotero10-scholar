@@ -67,3 +67,26 @@
 刊名必填，可选 `aliases` 和 `issns` 数组；只有校验通过的 ISSN 才进入索引。
 来源声明只是可追溯信息，不等于本插件已经认证其准确性或数据授权。
 导入只解析 JSON，不执行文件中的代码。最大导入文件大小为 40 MiB。
+
+<a id="journal-abbreviations"></a>
+
+## 期刊缩写表（3.1.0）
+
+在设置中的“导入期刊缩写 JSON”加载；与指标导入按钮分开。
+以下是纯合成格式示例，不是实际期刊/真实缩写数据。
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "journal-abbreviations",
+  "source": "用户提供的缩写表来源与版本",
+  "records": [
+    {"title": "Fictional Journal for Format Testing", "abbreviation": "Fict. J. Format Test.", "issns": []}
+  ]
+}
+```
+
+`source` 必填，注明出处；`records` 为 1–100000 条，文件不超过 20 MB。
+每条需要非空 `title` 和 `abbreviation`，可选 `issns` 字符串数组；非法 ISSN 不用于匹配。
+刊名或 ISSN 对应多种缩写时跳过，已有非空缩写不覆盖；未匹配时不清空字段。
+本地导入表不随默认 XPI 或公开源码导出。期刊缩写与指标数据的授权分别核对。

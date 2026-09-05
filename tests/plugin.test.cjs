@@ -8,6 +8,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const test = require("node:test");
 const Core = require("../src/core.js");
+const Metadata = require("../src/metadata.js");
 
 const PLUGIN_CODE = fs.readFileSync(path.join(__dirname, "../src/plugin.js"), "utf8");
 const PAMI = "IEEE TRANSACTIONS ON PATTERN ANALYSIS AND MACHINE INTELLIGENCE";
@@ -52,7 +53,8 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     transactionGate: null, pickerQueue: [], inputFiles: new Map(),
     outputFiles: new Map([...localFiles].map(([filename, data]) => [filename, structuredClone(data)])),
     writes: [], beforeWrite: null, autoNew: true, resourceReads: [], localReads: [],
-    activeMenus: new Set(), activePanes: new Set(), menuConfigs: new Map(), observerPriority: null
+    activeMenus: new Set(), activePanes: new Set(), menuConfigs: new Map(), observerPriority: null,
+    preferences: { "metadata.auto": false, "metadata.duplicates": true, ...Object.fromEntries(Object.entries(Metadata.DEFAULTS).map(([key, value]) => ["metadata." + key, value])) }
   };
 
   class FilePicker {
@@ -107,9 +109,16 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
       },
       unregisterObserver: () => { state.observer = null; }
     },
-    Prefs: { get: key => key.endsWith("autoNew") ? state.autoNew : "best", set() {} },
+    Prefs: {
+      get: key => key.endsWith("autoNew") ? state.autoNew : key.endsWith("quartilePolicy") ? "best" : state.preferences[key.replace("extensions.zotero10scholar.", "")],
+      set: (key, value) => { state.preferences[key.replace("extensions.zotero10scholar.", "")] = value; }
+    },
     Promise: { delay: async () => {} },
-    Items: { getAsync: async ids => ids.map(id => state.items.get(id)) },
+    Items: {
+      getAsync: async ids => ids.map(id => state.items.get(id)),
+      loadDataTypes: async () => {},
+      getAll: async libraryID => [...state.items.values()].filter(item => item.libraryID === libraryID && !item.deleted)
+    },
     ItemFields: { getID: name => name, isValidForType: () => true },
     UndoHistory: { stageAction: (action, args) => state.undoActions.push({ action, args }) },
     logError: error => state.errors.push(error),
@@ -146,7 +155,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
     }
   };
   const scope = {
-    ScholarCore: Core, Zotero, IOUtils,
+    ScholarCore: Core, ScholarMetadata: Metadata, Zotero, IOUtils,
     PathUtils: { join: (...parts) => parts.join("/") },
     ChromeUtils: { importESModule: () => ({ FilePicker }) },
     Services: { prompt: { alert: (_, __, text) => state.alerts.push(text), confirm: () => true } }
@@ -159,7 +168,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
   function item(id, values = {}) {
     const fields = { title: `Paper ${id}`, publicationTitle: PAMI, ISSN: "0162-8828", callNumber: "", extra: "User note", ...values };
     const object = {
-      id, key: `ITEM${id}`, itemType: "journalArticle", itemTypeID: 1,
+      id, key: `ITEM${id}`, libraryID: 1, itemType: "journalArticle", itemTypeID: 1,
       library: { libraryType: "user" }, deleted: false, isFeedItem: false,
       fields, saveEntered: deferred(), saveGate: null, saveError: null,
       isRegularItem: () => true, isEditable: () => true,
@@ -184,6 +193,147 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map() } 
   }
   return { plugin, state, item };
 }
+
+function mockWindow() {
+  return { openDialog(_url, _name, _features, data) {
+    return { arguments: [data], closed: false, addEventListener() {}, removeEventListener() {}, close() { this.closed = true; } };
+  } };
+}
+
+test("metadata menu previews changes and selected approval saves metadata plus ranks once", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(300, { title: "BRCA1  and p53 in a study", DOI: "doi:10.1234/test", volume: "001", language: "en" });
+  const other = item(301, { DOI: "doi:10.1234/other" });
+  const untouched = { ...other.fields };
+  const menu = state.menuConfigs.get("scholar-items").menus[0].menus.find(m => m.l10nID === "zsr10-metadata");
+  const window = mockWindow();
+  menu.onCommand(null, { items: [record, other], menuElem: { ownerGlobal: window } });
+  await tick();
+  const dialog = [...plugin.dialogs][0];
+  assert.ok(dialog);
+  assert.equal(state.saveIDs.length, 0);
+  const data = dialog.arguments[0];
+  assert.ok(data.rows[0].fields.some(f => f.name === "DOI" && f.after === "10.1234/test"));
+  assert.equal((await data.apply([record.id])).written, 1);
+  assert.equal(record.fields.title, "BRCA1 and p53 in a study");
+  assert.equal(record.fields.callNumber, "A|20.4|Q1|1区TOP");
+  assert.ok(Metadata.readState(record.fields.extra).state);
+  assert.ok(Core.readState(record.fields.extra).state);
+  assert.equal(state.saveIDs.length, 1);
+  assert.deepEqual(other.fields, untouched);
+  await assert.rejects(data.apply([other.id]), /已经应用/);
+});
+
+test("a reviewed metadata plan cannot overwrite a later edit or newly read-only item", async () => {
+  const { plugin, item } = await harness();
+  const record = item(302, { DOI: "doi:10.1234/test" });
+  const dialog = await plugin.previewMetadata([record], { win: mockWindow() });
+  record.fields.DOI = "manual correction";
+  const counts = await dialog.arguments[0].apply([record.id]);
+  assert.equal(counts["manually-edited"], 1);
+  assert.equal(record.fields.DOI, "manual correction");
+  assert.equal(record.fields.callNumber, "");
+  const next = await plugin.previewMetadata([record], { win: mockWindow() });
+  record.isEditable = () => false;
+  assert.equal((await next.arguments[0].apply([record.id]))["manually-edited"], 1);
+});
+
+test("reviewed plans remain exact when rules or abbreviation data change after preview", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(303, { DOI: "doi:10.1234/test" });
+  const dialog = await plugin.previewMetadata([record], { win: mockWindow() });
+  state.preferences["metadata.doi"] = false;
+  plugin.abbreviations = new Metadata.Abbreviations({schemaVersion:1,kind:"journal-abbreviations",source:"Synthetic",records:[{title:PAMI,abbreviation:"Late value"}]});
+  await dialog.arguments[0].apply([record.id]);
+  assert.equal(record.fields.DOI, "10.1234/test");
+  assert.equal(record.fields.journalAbbreviation || "", "");
+});
+
+test("metadata-only automatic imports work without rank data and keep their toggle separate", async () => {
+  const { plugin, state, item } = await harness({ builtins: {} });
+  state.autoNew = false;
+  state.preferences["metadata.auto"] = true;
+  const record = item(304, { DOI: "doi:10.1234/test", language: "en", callNumber: "My shelf" });
+  state.observer.notify("add", "item", [record.id]);
+  await plugin.pendingAuto;
+  assert.equal(record.fields.DOI, "10.1234/test");
+  assert.equal(record.fields.callNumber, "My shelf");
+  assert.equal(Core.readState(record.fields.extra).state, null);
+  state.preferences["metadata.auto"] = false;
+  const other = item(305, { DOI: "doi:10.1234/other" });
+  state.observer.notify("add", "item", [other.id]);
+  await plugin.pendingAuto;
+  assert.equal(other.fields.DOI, "doi:10.1234/other");
+});
+
+test("metadata cleanup preserves manually edited call number and can restore its own fields", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(306, { DOI: "doi:10.1234/test", volume: "002", language: "en", callNumber: "User shelf" });
+  await plugin.apply([record], { metadata: true, silent: true });
+  const extra = record.fields.extra;
+  assert.equal(record.fields.callNumber, "User shelf");
+  record.fields.DOI = "user DOI";
+  state.persisted.set(record.id, { ...record.fields });
+  const dialog = await plugin.previewMetadata([record], { restore: true, win: mockWindow() });
+  await dialog.arguments[0].apply([record.id]);
+  assert.equal(record.fields.volume, "002");
+  assert.equal(record.fields.DOI, "user DOI");
+  assert.equal(record.fields.callNumber, "User shelf");
+  assert.notEqual(record.fields.extra, extra);
+});
+
+test("failed metadata save rolls back every touched field and both backup records", async () => {
+  const { plugin, state, item } = await harness();
+  const a = item(307, { DOI: "doi:10.1234/a" }), b = item(308, { DOI: "doi:10.1234/b" });
+  const originals = [a, b].map(item => ({ ...item.fields }));
+  b.saveError = new Error("metadata save failed");
+  const dialog = await plugin.previewMetadata([a, b], { win: mockWindow() });
+  await assert.rejects(dialog.arguments[0].apply([a.id, b.id]), /metadata save failed/);
+  assert.deepEqual([a.fields, b.fields], originals);
+  assert.equal(state.rollbacks, 1);
+});
+
+test("duplicate-only preview reads the selected library without writing", async () => {
+  const { plugin, state, item } = await harness();
+  const a = item(309, { DOI: "doi:10.1234/a" }), b = item(310, { DOI: "10.1234/a" });
+  const c = item(311, { DOI: "10.1234/a" }); c.libraryID = 2;
+  const dialog = await plugin.previewMetadata([a], { duplicatesOnly: true, win: mockWindow() });
+  assert.deepEqual(Array.from(dialog.arguments[0].rows[0].duplicates, row => row.id), [b.id]);
+  assert.equal(dialog.arguments[0].rows[0].writable, false);
+  assert.equal(state.saveIDs.length, 0);
+});
+
+test("imported abbreviation tables persist across reload and malformed replacements are rejected", async () => {
+  const { plugin, state, item } = await harness();
+  const table = { schemaVersion: 1, kind: "journal-abbreviations", source: "Synthetic user table", records: [{ title: PAMI, abbreviation: "Fixture Abbr" }] };
+  state.inputFiles.set("/table.json", table); state.pickerQueue.push({ file: "/table.json" });
+  await plugin.importAbbreviations();
+  assert.equal(plugin.abbreviations.count, 1);
+  assert.equal(state.saveIDs.length, 0);
+  const reopened = await harness({ localFiles: state.outputFiles });
+  assert.equal(reopened.plugin.abbreviations.count, 1);
+  const record = item(312);
+  assert.equal(plugin.metadataPlan(plugin.snapshot(record)).fields.journalAbbreviation, "Fixture Abbr");
+  state.inputFiles.set("/bad.json", null); state.pickerQueue.push({ file: "/bad.json" });
+  await assert.rejects(plugin.importAbbreviations(), /缩写表/);
+  assert.equal(plugin.abbreviations.count, 1);
+});
+
+test("metadata and rank backups restore exactly in either order", async () => {
+  for (const rankFirst of [true, false]) {
+    const { plugin, item } = await harness();
+    const record = item(313, { DOI: "doi:10.1234/test", language: "en", extra: "Citation Key: keep\n" });
+    const original = { ...record.fields };
+    await plugin.apply([record], { metadata: true, silent: true });
+    const restoreMetadata = async () => {
+      const before = plugin.snapshot(record), plan = plugin.metadataPlan(before, { restore: true });
+      await plugin.applyReviewed([{ item: record, before, plan }]);
+    };
+    if (rankFirst) { await plugin.apply([record], { restore: true, silent: true }); await restoreMetadata(); }
+    else { await restoreMetadata(); await plugin.apply([record], { restore: true, silent: true }); }
+    assert.deepEqual(record.fields, original);
+  }
+});
 
 function previouslyManagedItem({ plugin, state, item }, id) {
   const record = item(id, { callNumber: "QA76 original shelf mark", extra: "Citation Key: keep\r\nUser notes" });

@@ -14,6 +14,7 @@ async function startup({ id, version, rootURI }) {
         ["content", "zotero10-scholar", "./"]
       ]);
     Services.scriptloader.loadSubScriptWithOptions(`${rootURI}src/core.js`, { target: scholarScope, ignoreCache: true });
+    Services.scriptloader.loadSubScriptWithOptions(`${rootURI}src/metadata.js`, { target: scholarScope, ignoreCache: true });
     Services.scriptloader.loadSubScriptWithOptions(`${rootURI}src/plugin.js`, { target: scholarScope, ignoreCache: true });
     await scholarScope.ScholarPlugin.start({ id, version, rootURI });
   } catch (error) {

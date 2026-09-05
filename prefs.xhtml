@@ -30,9 +30,21 @@
     <html:p id="zsr10-load-warning" style="white-space:pre-wrap;color:#a33"></html:p>
   </groupbox>
   <groupbox>
+    <label><html:h3>元数据整理</html:h3></label>
+    <description>右键 Scholar Rank → 整理元数据与更新指标，先预览再应用。标题保留大小写和专业词，富文本不自动改写。</description>
+    <html:div id="zsr10-metadata-rules" style="display:grid;gap:8px;margin:12px 0"></html:div>
+    <html:label><html:input id="zsr10-metadata-auto" type="checkbox"/> 导入新条目时自动整理元数据（默认关闭）</html:label>
+    <description>自动整理与自动填充指标独立开关；都启用时，先整理再匹配指标。自动模式不弹出重复条目提示，可从右键菜单检查。</description>
+    <html:p id="zsr10-abbreviation-summary" style="white-space:pre-wrap"></html:p>
+    <html:button id="zsr10-import-abbreviations">导入期刊缩写 JSON…</html:button>
+    <description>缩写表未命中或存在歧义时跳过；已有缩写和语言不覆盖。语言识别仅保守识别中文/英文，其他语言请手动填写。</description>
+    <description>若同时启用 Linter，请停用其重复的自动整理，并关闭“清理被滥用的标准字段”。</description>
+  </groupbox>
+  <groupbox>
     <label><html:h3>备份和撤销</html:h3></label>
     <description>首次写入时，原索书号保存在 Extra 的 “Zotero Scholar Rank:” 行中，其他 Extra 内容保留。不要删除该行，否则将失去插件恢复依据。</description>
     <description>支持 Zotero 的撤销/重做；右键“恢复原索书号”可跨重启恢复。手动修改过的结果不会自动覆盖。卸载插件不会自动修改条目。</description>
+    <description>整理字段的原值另存于 Extra 的 “Zotero Scholar Metadata:” 行；右键“恢复整理前的元数据”可逐字段恢复。请保留该行。</description>
     <description>指标描述期刊或会议，不是对单篇论文质量的评定。</description>
   </groupbox>
 </vbox>

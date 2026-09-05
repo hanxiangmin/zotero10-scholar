@@ -32,13 +32,13 @@
 ## Linter 共存与功能评估
 
 [northword/zotero-format-metadata（Linter for Zotero）](https://github.com/northword/zotero-format-metadata)
-是本项目已知的共存插件，也是元数据整理功能的评估参考。2026-09-05 核对提交
+是本项目已知的共存插件，也是元数据整理功能需求的参考。2026-09-05 核对提交
 [`095ada8b6cb8ed1e853b1c0f49b13d7020f514d0`](https://github.com/northword/zotero-format-metadata/tree/095ada8b6cb8ed1e853b1c0f49b13d7020f514d0)
 的包元数据声明 `AGPL-3.0-or-later`，仓库附 AGPL v3 许可全文。
 
-当前版本仅对其索书号清理行为做兼容处理，未合入该插件的运行时代码、图标或数据表，亦非其官方发行版。
+3.1.0 的元数据模块按本项目需求独立实现，未移植该插件的源码、测试、词表、图标或数据表，亦非其官方发行版。
 将来若直接移植其代码，合并形成的衍生版本须遵守 AGPL，不能用本项目 MIT 声明覆盖上游许可。
-拟保留功能、依赖与许可处理见[开发说明中的整合评估](docs/DEVELOPMENT.md#metadata-integration)。
+独立实现的范围与行为见[开发说明](docs/DEVELOPMENT.md)。
 
 ## 本项目许可证的范围
 

@@ -26,7 +26,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Test matching and Zotero integration mocks
-        run: node --test tests/core.test.cjs tests/plugin.test.cjs
+        run: node --test tests/core.test.cjs tests/metadata.test.cjs tests/plugin.test.cjs
       - name: Test public packaging
         run: python -m unittest discover -s tests -p "test_*.py"
       - name: Build public XPI without third-party tables

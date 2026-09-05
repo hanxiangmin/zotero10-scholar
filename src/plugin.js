@@ -1,6 +1,7 @@
 (function (root) {
   "use strict";
   const { Catalog, planUpdate, planRestore } = root.ScholarCore;
+  const Metadata = root.ScholarMetadata;
   const PREF = "extensions.zotero10scholar.";
   const LABEL = "Zotero 10 Scholar Rank";
   // Zotero awaits item observers in ascending priority order. Linter for
@@ -52,6 +53,12 @@
         else this.loadWarnings.push(`${kind.toUpperCase()} 暂无可用数据，请在设置中导入有权使用的 JSON 数据包。`);
       }
       this.catalog = new Catalog(datasets);
+      this.abbreviations = new Metadata.Abbreviations();
+      const abbreviationPath = PathUtils.join(this.storageDir, "abbreviations.json");
+      if (await IOUtils.exists(abbreviationPath)) {
+        try { this.abbreviations = new Metadata.Abbreviations(await IOUtils.readJSON(abbreviationPath)); }
+        catch (error) { this.loadWarnings.push("期刊缩写表未加载：" + error.message); }
+      }
       Zotero.ScholarRank10 = this;
       Zotero.ftl.addResourceIds(["zotero10-scholar.ftl"]);
       for (const win of Zotero.getMainWindows()) this.addWindow(win);
@@ -62,12 +69,13 @@
       });
       this.observer = Zotero.Notifier.registerObserver({
         notify: (event, type, ids) => {
-          if (event !== "add" || type !== "item" || !this.pref("autoNew") || !this.active) return;
+          if (event !== "add" || type !== "item" || (!this.pref("autoNew") && !this.pref("metadata.auto")) || !this.active) return;
           this.pendingAuto = this.pendingAuto.then(async () => {
             await Zotero.Promise.delay(500);
             if (!this.active) return;
+            if (!this.pref("autoNew") && !this.pref("metadata.auto")) return;
             const items = (await Zotero.Items.getAsync(ids)).filter(Boolean);
-            await this.apply(items, { silent: true });
+            await this.apply(items, { silent: true, metadata: Boolean(this.pref("metadata.auto")), updateRanks: Boolean(this.pref("autoNew")) });
           }).catch(e => Zotero.logError(e));
         }
       }, ["item"], "zotero10-scholar", AUTO_NOTIFIER_PRIORITY);
@@ -115,6 +123,9 @@
       this.menuIDs.push(Zotero.MenuManager.registerMenu({
         menuID: "scholar-items", pluginID: this.id, target: "main/library/item",
         menus: [{ menuType: "submenu", l10nID: "zsr10-menu", menus: [
+          command("metadata", (items, win) => this.previewMetadata(items, { win })),
+          command("metadata-restore", (items, win) => this.previewMetadata(items, { win, restore: true })),
+          command("duplicates", (items, win) => this.previewMetadata(items, { win, duplicatesOnly: true })),
           command("preview", (items, win) => this.preview(items, win)),
           command("update", (items, win) => this.apply(items, { repairCleared: true, win })),
           command("overwrite", async (items, win) => {
@@ -142,14 +153,37 @@
       return this.supported(item) && !item.deleted && !item.isFeedItem && item.library?.libraryType !== "feed" && item.isEditable();
     },
     snapshot(item) {
-      const fields = ["title", "publicationTitle", "journalAbbreviation", "ISSN", "proceedingsTitle", "conferenceName", "callNumber", "extra"];
-      const data = { itemType: item.itemType, key: item.key, id: item.id };
+      const fields = [...new Set(["title", "publicationTitle", "journalAbbreviation", "ISSN", "proceedingsTitle", "conferenceName", "callNumber", "extra", ...Metadata.FIELDS])];
+      const data = { itemType: item.itemType, key: item.key, id: item.id, libraryID: item.libraryID };
       for (const field of fields) {
         data[field] = Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), item.itemTypeID) ? String(item.getField(field) || "") : "";
       }
       return data;
     },
     policy() { return ["best", "worst", "all"].includes(this.pref("quartilePolicy")) ? this.pref("quartilePolicy") : "best"; },
+
+    metadataOptions() {
+      return Object.fromEntries(Object.entries(Metadata.DEFAULTS).map(([name, fallback]) => [name, this.pref("metadata." + name) ?? fallback]));
+    },
+
+    metadataPlan(before, { restore = false, updateRanks = true, repairCleared = true } = {}) {
+      const metadata = restore ? Metadata.restore(before) : Metadata.plan(before, this.metadataOptions(), this.abbreviations);
+      if (metadata.reason === "invalid-backup") return metadata;
+      const fields = { ...metadata.fields }, warnings = [...metadata.warnings];
+      let extra = metadata.action === "write" ? metadata.extra : before.extra;
+      if (!restore && updateRanks) {
+        const working = { ...before, ...fields, extra };
+        const rank = planUpdate(working, this.catalog.lookup(working, this.policy()), { repairCleared });
+        if (rank.action === "write") { fields.callNumber = rank.callNumber; extra = rank.extra; }
+        else if (!["no-data", "unchanged"].includes(rank.reason)) warnings.push("指标：" + (REASONS[rank.reason] || rank.reason));
+      }
+      // A backup must never target a field absent from the live item type.
+      for (const field of Object.keys(fields)) {
+        if (field !== "callNumber" && !Metadata.FIELDS.includes(field)) throw new Error("不支持的整理字段：" + field);
+      }
+      return Object.keys(fields).length ? { action: "write", fields, extra, warnings }
+        : { action: "skip", reason: metadata.reason || "unchanged", fields, warnings };
+    },
 
     beginOperation() {
       this.busy = true;
@@ -159,13 +193,13 @@
     },
 
     async apply(items, {
-      allowOverwrite = false, repairCleared = false, restore = false, silent = false, win = this.window()
+      allowOverwrite = false, repairCleared = false, restore = false, silent = false, win = this.window(), metadata = false, updateRanks = true
     } = {}) {
       if (!this.active) return;
       if (this.busy) {
         if (silent) {
           await this.currentOperation;
-          return this.apply(items, { allowOverwrite, repairCleared, restore, silent, win });
+          return this.apply(items, { allowOverwrite, repairCleared, restore, silent, win, metadata, updateRanks });
         }
         this.alert("上一批更新尚未结束，请稍后再试。", win);
         return;
@@ -180,40 +214,13 @@
           if (!this.supported(item)) { count("unsupported-type"); continue; }
           if (!this.editable(item)) { count("read-only"); continue; }
           const before = this.snapshot(item);
-          const plan = restore ? planRestore(before) : planUpdate(
+          const plan = metadata ? this.metadataPlan(before, { updateRanks, repairCleared }) : restore ? planRestore(before) : planUpdate(
             before, this.catalog.lookup(before, this.policy()), { allowOverwrite, repairCleared }
           );
           if (plan.action === "write") changes.push({ item, before, plan });
           else count(plan.reason);
         }
-        if (changes.length) {
-          const touched = [];
-          try {
-            await Zotero.DB.executeTransaction(async () => {
-              let written = 0;
-              for (const change of changes) {
-                if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
-                const { item, before, plan } = change;
-                // Recheck permissions and current fields after waiting for the transaction.
-                const current = this.snapshot(item);
-                if (!this.editable(item) || Object.keys(before).some(key => current[key] !== before[key])) {
-                  count("manually-edited"); continue;
-                }
-                touched.push(item);
-                item.setField("callNumber", plan.callNumber);
-                item.setField("extra", plan.extra);
-                await item.save({ skipSelect: true });
-                written++;
-              }
-              if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
-              if (written) Zotero.UndoHistory.stageAction("undo-action-edit-metadata", { count: written });
-              counts.written = written;
-            });
-          } catch (error) {
-            for (const item of touched) await item.reload(null, true).catch(e => Zotero.logError(e));
-            throw error;
-          }
-        }
+        await this.saveChanges(changes, counts);
         if (!silent) {
           const lines = [`${restore ? "已恢复" : "已更新"} ${counts.written || 0} 条。`];
           for (const [key, value] of Object.entries(counts)) if (key !== "written") lines.push(`${REASONS[key] || key}：${value}`);
@@ -222,6 +229,123 @@
           this.alert(lines.join("\n"), win);
         }
         return counts;
+      } finally { finish(); }
+    },
+
+    async saveChanges(changes, counts) {
+      if (!changes.length) return;
+      const touched = [];
+      try {
+        await Zotero.DB.executeTransaction(async () => {
+          let written = 0;
+          for (const { item, before, plan } of changes) {
+            if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
+            const current = this.snapshot(item);
+            if (!this.editable(item) || Object.keys(before).some(key => current[key] !== before[key])) {
+              counts["manually-edited"] = (counts["manually-edited"] || 0) + 1; continue;
+            }
+            const fields = plan.fields || { callNumber: plan.callNumber };
+            if (Object.keys(fields).some(field => field !== "callNumber"
+                && (!Metadata.FIELDS.includes(field) || !Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), item.itemTypeID)))) {
+              throw new Error("条目不支持待整理字段，已回滚本批更新。");
+            }
+            touched.push(item);
+            for (const [field, value] of Object.entries(fields)) item.setField(field, value);
+            item.setField("extra", plan.extra);
+            await item.save({ skipSelect: true });
+            written++;
+          }
+          if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
+          if (written) Zotero.UndoHistory.stageAction("undo-action-edit-metadata", { count: written });
+          counts.written = written;
+        });
+      } catch (error) {
+        for (const item of touched) await item.reload(null, true).catch(e => Zotero.logError(e));
+        throw error;
+      }
+    },
+
+    async applyReviewed(changes) {
+      if (!this.active) throw new Error("插件已停用，请重新打开预览。");
+      if (this.busy) throw new Error("上一批更新尚未结束，请稍后再试。");
+      const finish = this.beginOperation(), counts = {};
+      try { await this.saveChanges(changes, counts); return counts; }
+      finally { finish(); }
+    },
+
+    async findDuplicates(items) {
+      const libraries = [...new Set(items.map(item => item.libraryID))];
+      const snapshots = [];
+      for (const libraryID of libraries) {
+        const all = await Zotero.Items.getAll(libraryID, true, false, false);
+        await Zotero.Items.loadDataTypes(all, ["itemData"]);
+        for (const item of all) if (this.supported(item) && !item.deleted) snapshots.push(this.snapshot(item));
+      }
+      const lookup = Metadata.duplicateIndex(snapshots);
+      return new Map(items.map(item => [item.id, lookup(this.snapshot(item))]));
+    },
+
+    async previewMetadata(items, { win = this.window(), restore = false, duplicatesOnly = false } = {}) {
+      if (!this.active) return;
+      const selected = [...new Map(items.filter(item => this.supported(item)).map(item => [item.id, item])).values()];
+      const rows = [], changes = [];
+      for (const item of selected) {
+        const before = this.snapshot(item);
+        const plan = duplicatesOnly ? { action: "skip", fields: {}, warnings: [] } : this.metadataPlan(before, { restore });
+        const writable = this.editable(item) && plan.action === "write";
+        if (writable) changes.push({ item, before, plan });
+        const fields = Object.entries(plan.fields).map(([name, value]) => ({ name, before: before[name], after: value }));
+        rows.push({ id: item.id, title: before.title, fields, writable,
+          warnings: [...plan.warnings, ...(!this.editable(item) ? ["只读条目，不能应用修改。"] : [])] });
+      }
+      let duplicates = new Map(), duplicateWarning = "";
+      if (!restore && (duplicatesOnly || this.pref("metadata.duplicates"))) {
+        try { duplicates = await this.findDuplicates(selected); }
+        catch (error) { Zotero.logError(error); duplicateWarning = "重复检查失败；未修改或删除任何条目。"; }
+      }
+      if (!this.active) return;
+      for (const row of rows) row.duplicates = duplicates.get(row.id) || [];
+      let applied = false;
+      const dialog = win.openDialog("chrome://zotero10-scholar/content/metadata-preview.xhtml", "",
+        "chrome,centerscreen,resizable,width=1050,height=720", {
+          rows, restore, duplicatesOnly, duplicateWarning,
+          abbreviationSummary: this.abbreviations.count ? `${this.abbreviations.count} 条缩写；来源：${this.abbreviations.source}` : "未导入缩写表，可在设置中导入 JSON。",
+          apply: async ids => {
+            if (applied) throw new Error("本次预览已经应用，请重新打开预览。");
+            const idsToApply = new Set(ids);
+            const result = await this.applyReviewed(changes.filter(change => idsToApply.has(change.item.id)));
+            applied = true; return result;
+          },
+          selectDuplicates: async ids => {
+            if (!this.active) return;
+            await Zotero.getMainWindow().ZoteroPane.selectItems(ids);
+          }
+        });
+      this.dialogs.add(dialog);
+      const onUnload = event => {
+        if (event.target?.documentURI !== "chrome://zotero10-scholar/content/metadata-preview.xhtml") return;
+        this.dialogs.delete(dialog); dialog.removeEventListener("unload", onUnload);
+      };
+      dialog.addEventListener("unload", onUnload);
+      return dialog;
+    },
+
+    async importAbbreviations(win = this.window()) {
+      const { FilePicker } = ChromeUtils.importESModule("chrome://zotero/content/modules/filePicker.mjs");
+      const fp = new FilePicker(); fp.init(win, "导入期刊缩写 JSON 表", fp.modeOpen); fp.appendFilter("JSON", "*.json");
+      if (await fp.show() !== fp.returnOK || !this.active) return;
+      if ((await IOUtils.stat(fp.file)).size > 20 * 1024 * 1024) throw new Error("缩写表超过 20 MB。");
+      const data = await IOUtils.readJSON(fp.file), catalog = new Metadata.Abbreviations(data);
+      if (!this.active || !Services.prompt.confirm(win, LABEL, `导入 ${catalog.count} 条期刊缩写？\n来源：${catalog.source}\n仅加载表，不修改文献。`)) return;
+      while (this.currentOperation) await this.currentOperation;
+      if (!this.active) return;
+      const finish = this.beginOperation();
+      try {
+        await IOUtils.makeDirectory(this.storageDir, { ignoreExisting: true });
+        if (!this.active) return;
+        const path = PathUtils.join(this.storageDir, "abbreviations.json");
+        await IOUtils.writeJSON(path, data, { tmpPath: path + ".tmp" });
+        this.abbreviations = catalog;
       } finally { finish(); }
     },
 

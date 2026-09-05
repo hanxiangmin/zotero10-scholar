@@ -12,7 +12,7 @@
 提交前运行：
 
 ```sh
-node --test tests/core.test.cjs tests/plugin.test.cjs
+node --test tests/core.test.cjs tests/metadata.test.cjs tests/plugin.test.cjs
 python -m unittest discover -s tests -p "test_*.py"
 python scripts/build.py
 ```

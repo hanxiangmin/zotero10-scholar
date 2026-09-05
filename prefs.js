@@ -1,2 +1,10 @@
 pref("extensions.zotero10scholar.quartilePolicy", "best");
 pref("extensions.zotero10scholar.autoNew", false);
+pref("extensions.zotero10scholar.metadata.auto", false);
+pref("extensions.zotero10scholar.metadata.title", true);
+pref("extensions.zotero10scholar.metadata.doi", true);
+pref("extensions.zotero10scholar.metadata.pages", true);
+pref("extensions.zotero10scholar.metadata.numbers", true);
+pref("extensions.zotero10scholar.metadata.language", true);
+pref("extensions.zotero10scholar.metadata.abbreviation", true);
+pref("extensions.zotero10scholar.metadata.duplicates", true);
