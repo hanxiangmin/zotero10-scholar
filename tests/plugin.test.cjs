@@ -544,7 +544,7 @@ test("an explicit update repairs an externally cleared rank but preserves non-em
   assert.equal(record.fields.callNumber, "User shelf mark");
 });
 
-test("the confirmed overwrite menu can refresh a cleared rank after metrics change", async () => {
+test("the overwrite menu previews editable metrics and backs up an explicit approved replacement", async () => {
   const environment = await harness();
   const { plugin, state, item } = environment;
   const { record } = previouslyManagedItem(environment, 9);
@@ -558,13 +558,110 @@ test("the confirmed overwrite menu can refresh a cleared rank after metrics chan
 
   const itemMenu = state.menuConfigs.get("scholar-items");
   const overwrite = itemMenu.menus[0].menus.find(menu => menu.l10nID === "zsr10-overwrite");
-  overwrite.onCommand(null, { items: [record], menuElem: { ownerGlobal: {} } });
+  overwrite.onCommand(null, { items: [record], menuElem: { ownerGlobal: mockWindow() } });
   await tick();
-  if (plugin.currentOperation) await plugin.currentOperation;
-  await tick();
-
+  assert.equal(record.fields.callNumber, "");
+  const data = [...plugin.dialogs][0].arguments[0];
+  assert.equal(data.manual, true);
+  assert.equal(data.rows[0].suggestions.callNumber, "A|21.1|Q1|1区TOP");
+  await data.apply([record.id], [{ id: record.id, fields: data.rows[0].suggestions }]);
   assert.equal(record.fields.callNumber, "A|21.1|Q1|1区TOP");
   assert.equal(Core.readState(record.fields.extra).state.original, "QA76 original shelf mark");
+  assert.equal(Metadata.readManual(record.fields.extra).state.fields.callNumber.original, "");
+});
+
+test("manual preview cancellation and no-op remain editable without any writes", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(400, { callNumber: "My shelf" });
+  const data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
+  assert.equal((await data.apply([record.id], [{ id: record.id, fields: { callNumber: "My shelf" } }])).unchanged, true);
+  plugin.confirmManual = () => false;
+  const edits = [{ id: record.id, fields: { callNumber: "C", language: "fr" } }];
+  assert.equal((await data.apply([record.id], edits)).cancelled, true);
+  assert.equal(state.saveIDs.length, 0);
+  assert.equal(record.fields.callNumber, "My shelf");
+  plugin.confirmManual = () => true;
+  assert.equal((await data.apply([record.id], edits)).written, 1);
+  assert.equal(record.fields.callNumber, "C");
+  assert.equal(record.fields.language, "fr");
+  await assert.rejects(data.apply([record.id], edits), /已经应用/);
+});
+
+test("manual fields survive automatic events, normal cleanup, overwrite and restore across restart", async () => {
+  const first = await harness();
+  const record = first.item(401, { DOI: "doi:10.1234/test", callNumber: "My shelf", language: "en" });
+  const before = { ...record.fields };
+  const data = (await first.plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
+  await data.apply([record.id], [{ id: record.id, fields: { callNumber: "", DOI: "doi:10.1234/manual" } }]);
+  const stored = { ...record.fields };
+  await first.plugin.stop();
+  const next = await harness();
+  const reloaded = next.item(401, stored);
+  next.state.preferences["metadata.auto"] = true;
+  next.state.observer.notify("add", "item", [reloaded.id]);
+  await next.plugin.pendingAuto;
+  assert.equal(next.state.saveIDs.length, 0);
+  assert.equal((await next.plugin.apply([reloaded], { silent: true, allowOverwrite: true, repairCleared: true }))["manual-override"], 1);
+  assert.equal((await next.plugin.apply([reloaded], { silent: true, restore: true }))["manual-override"], 1);
+  assert.deepEqual(reloaded.fields, stored);
+  const restore = (await next.plugin.previewMetadata([reloaded], { win: mockWindow(), manualRestore: true })).arguments[0];
+  await restore.apply([reloaded.id]);
+  assert.deepEqual(reloaded.fields, before);
+});
+
+test("manual approval skips stale and read-only records and cannot edit unsupported fields or foreign IDs", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(402), readonly = item(403);
+  const data = (await plugin.previewMetadata([record, readonly], { win: mockWindow(), manual: true })).arguments[0];
+  await assert.rejects(data.apply([record.id], [{ id: 999, fields: { callNumber: "C" } }]), /不一致/);
+  await assert.rejects(data.apply([record.id], [{ id: record.id, fields: { extra: "erase" } }]), /不支持/);
+  record.fields.title = "Changed after preview";
+  readonly.isEditable = () => false;
+  const counts = await data.apply([record.id, readonly.id], [record, readonly].map(item => ({id:item.id,fields:{callNumber:"C"}})));
+  assert.equal(counts["manually-edited"], 2);
+  assert.equal(state.saveIDs.length, 0);
+});
+
+test("manual batch failure rolls back overrides and backups for every item", async () => {
+  const { plugin, state, item } = await harness();
+  const records = [item(404), item(405)], originals = records.map(record => ({ ...record.fields }));
+  records[1].saveError = new Error("manual save failed");
+  const data = (await plugin.previewMetadata(records, { win: mockWindow(), manual: true })).arguments[0];
+  await assert.rejects(data.apply(records.map(record => record.id), records.map(record => ({id:record.id,fields:{callNumber:"C",language:"fr"}}))), /manual save failed/);
+  assert.equal(state.rollbacks, 1);
+  records.forEach((record, index) => assert.deepEqual(record.fields, originals[index]));
+});
+
+test("manual metric suggestions do not clear unmatched values or suggest older or incomplete source results", async () => {
+  const environment = await harness();
+  const { plugin, item } = environment;
+  const { record } = previouslyManagedItem(environment, 406);
+  plugin.catalog.replace(jcrDataset(2024));
+  let data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
+  assert.equal(data.rows[0].suggestions.callNumber, undefined);
+  plugin.catalog = new Core.Catalog([fixtureDatasets()["ccf-2026.json"]]);
+  data = (await plugin.previewMetadata([record], { win: mockWindow(), manual: true })).arguments[0];
+  assert.equal(data.rows[0].suggestions.callNumber, undefined);
+  const unknown = item(407, { publicationTitle: "Unknown", ISSN: "", callNumber: "Keep" });
+  data = (await plugin.previewMetadata([unknown], { win: mockWindow(), manual: true })).arguments[0];
+  assert.equal(data.rows[0].suggestions.callNumber, undefined);
+  assert.equal(data.rows[0].fields.find(field => field.name === "callNumber").after, "Keep");
+});
+
+test("management uses the live main-window selection and rank-only review does not clean metadata", async () => {
+  const { plugin, state, item } = await harness();
+  const record = item(408, { DOI: "doi:10.1234/test" });
+  let selected = [];
+  plugin.window = () => ({ ZoteroPane: { getSelectedItems: () => selected } });
+  await plugin.manageSelected("manual", mockWindow());
+  assert.equal(state.alerts.length, 1);
+  selected = [record];
+  const data = (await plugin.manageSelected("ranks", mockWindow())).arguments[0];
+  assert.equal(data.rows[0].fields.length, 1);
+  assert.equal(data.rows[0].fields[0].name, "callNumber");
+  await data.apply([record.id]);
+  assert.equal(record.fields.DOI, "doi:10.1234/test");
+  assert.equal(record.fields.callNumber, "A|20.4|Q1|1区TOP");
 });
 
 test("stop waits for an in-flight last save and rolls the transaction back", { timeout: 5000 }, async t => {

@@ -10,7 +10,7 @@
 python scripts/export-source.py
 ```
 
-默认输出 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.1.0-source.zip`。
+默认输出 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.1.1-source.zip`。
 目录已有内容时不会覆盖；重新导出请指定一个新目录，例如：
 
 ```sh
@@ -31,7 +31,7 @@ python scripts/export-source.py --out publish/zotero10-scholar-next
 
 | 可准备公开发布 | 必须留在本地，除非另获相应授权 |
 | --- | --- |
-| 默认 `zotero10-scholar-3.1.0.xpi` | `*-personal.xpi`、早期附数据 XPI |
+| 默认 `zotero10-scholar-3.1.1.xpi` | `*-personal.xpi`、早期附数据 XPI |
 | `*-source.zip` 和各自 SHA-256 | `ShowJCR-master.zip`、真实 `data/*.json` |
 | 白名单源码和文档 | `work/` 测试库/日志、旧 `.git`、`legacy/`、`__data/` |
 

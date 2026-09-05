@@ -675,6 +675,16 @@ async function runSmoke(rootURI) {
       return null;
     }, 12000);
     same(preferences.document.getElementById("zsr10-metadata-auto").checked, false, "Auto-cleanup default checkbox");
+    const autoMetadata = preferences.document.getElementById("zsr10-metadata-auto");
+    const autoRanks = preferences.document.getElementById("zsr10-auto-new");
+    const originalAuto = autoRanks.checked;
+    if (!autoRanks.checked) autoRanks.click();
+    autoMetadata.click();
+    same(plugin.pref("autoNew"), true, "Management persists automatic metrics preference");
+    same(plugin.pref("metadata.auto"), true, "Management persists automatic cleanup preference");
+    check(preferences.document.getElementById("zsr10-auto-status").textContent.includes("自动整理 → 自动更新指标"), "Combined mode summary");
+    autoMetadata.click();
+    if (autoRanks.checked !== originalAuto) autoRanks.click();
     const checkbox = preferences.document.querySelectorAll("#zsr10-metadata-rules input")[1];
     checkbox.click(); same(plugin.pref("metadata.doi"), false, "Rule control persists disabled preference");
     checkbox.click(); same(plugin.pref("metadata.doi"), true, "Rule control can re-enable DOI cleanup");
@@ -775,6 +785,70 @@ async function runSmoke(rootURI) {
       same(item.getField("DOI"), "10.12345/automatic", "Automatic cleanup persisted");
       return { automaticCleanup: true, independentToggle: true };
     } finally { plugin.setPref("metadata.auto", false); }
+  });
+
+  await step("management-manual-editor-cancel-override-undo-and-restore", async () => {
+    await guard();
+    await win.ZoteroPane.selectItems([metadataItem.id]);
+    const before = await metaSaved(metadataItem);
+    plugin.showSettings();
+    const preferences = await waitFor("management buttons", () => {
+      const windows = Services.wm.getEnumerator(null);
+      while (windows.hasMoreElements()) {
+        const candidate = windows.getNext();
+        if (candidate.document?.getElementById("zsr10-manual")) return candidate;
+      }
+    }, 12000);
+    smokePreviews.add(preferences);
+    preferences.document.getElementById("zsr10-manual").click();
+    const dialog = await waitFor("manual editor opened from management", () => [...plugin.dialogs].find(candidate =>
+      !candidate.closed && candidate.arguments?.[0]?.manual && candidate.document.getElementById("rows")?.children.length === 1), 12000);
+    smokePreviews.add(dialog);
+    check(dialog.arguments[0].rows[0].id === metadataItem.id, "Editor uses main-window selected item");
+    check(dialog.document.querySelectorAll("textarea").length === 8, "Eight editable fields for journal article");
+    same(await metaSaved(metadataItem), before, "Opening management editor must not write");
+    const suggest = dialog.document.querySelector(".suggest");
+    check(suggest && !suggest.disabled, "Suggestion control exists");
+    suggest.click();
+    const edited = { DOI: "doi:10.12345/manual-override", language: "fr", callNumber: "C" };
+    // Reset all fields after checking suggestions; explicitly edit only these three.
+    for (const input of dialog.document.querySelectorAll("textarea")) input.value = before[input.dataset.field];
+    for (const [name, value] of Object.entries(edited)) dialog.document.querySelector(`textarea[data-field="${name}"]`).value = value;
+    const confirm = plugin.confirmManual;
+    let confirms = 0;
+    try {
+      // Stub only the final native confirmation in this isolated automated test.
+      plugin.confirmManual = () => { confirms++; return false; };
+      dialog.document.getElementById("apply").click();
+      await waitFor("manual cancellation", () => dialog.document.getElementById("result").textContent.includes("已取消"), 12000);
+      same(await metaSaved(metadataItem), before, "Cancelled overwrite makes no writes");
+      plugin.confirmManual = () => { confirms++; return true; };
+      Zotero.UndoHistory.clear();
+      dialog.document.getElementById("apply").click();
+      await waitFor("manual editor apply", () => dialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
+    } finally { plugin.confirmManual = confirm; }
+    const overridden = await metaSaved(metadataItem);
+    for (const [name, value] of Object.entries(edited)) same(overridden[name], value, "Manual override " + name);
+    check(overridden.extra.includes("Zotero Scholar Manual:"), "Persistent manual backup exists");
+    same(await Zotero.UndoHistory.undo(), true, "Native undo manual override");
+    same(await metaSaved(metadataItem), before, "Undo restores fields and backup exactly");
+    same(await Zotero.UndoHistory.redo(), true, "Native redo manual override");
+    same(await metaSaved(metadataItem), overridden, "Redo restores fields and backup exactly");
+    await apply(plugin, [metadataItem], { metadata: true, allowOverwrite: true, repairCleared: true });
+    const protectedValues = await metaSaved(metadataItem);
+    for (const [name, value] of Object.entries(edited)) same(protectedValues[name], value, "Ordinary update preserves manual " + name);
+    dialog.close();
+    preferences.document.getElementById("zsr10-restore-manual").click();
+    const restoreDialog = await waitFor("manual restore opened from management", () => [...plugin.dialogs].find(candidate =>
+      !candidate.closed && candidate.arguments?.[0]?.manualRestore && candidate.document.getElementById("rows")?.children.length === 1), 12000);
+    smokePreviews.add(restoreDialog);
+    restoreDialog.document.getElementById("apply").click();
+    await waitFor("manual restore applied", () => restoreDialog.document.getElementById("result").textContent.includes("已保存 1"), 12000);
+    const restored = await metaSaved(metadataItem);
+    for (const name of Object.keys(edited)) same(restored[name], before[name], "Restore first manual value " + name);
+    check(!restored.extra.includes("Zotero Scholar Manual:"), "Manual locks released after restore");
+    restoreDialog.close(); preferences.close();
+    return { confirms, finalConfirmationStubbed: true, editorViaManagementDOM: true, undoRedo: true, manualProtection: true, restored: true };
   });
 
   await step(smokeConfig.autoClose ? "final-preview-before-auto-close" : "leave-final-preview-for-inspection", async () => {

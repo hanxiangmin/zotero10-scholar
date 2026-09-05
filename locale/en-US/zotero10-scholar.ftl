@@ -1,5 +1,9 @@
 zsr10-menu =
     .label = Scholar Rank
+zsr10-manual =
+    .label = Edit and override…
+zsr10-manual-restore =
+    .label = Restore manual overrides…
 zsr10-metadata =
     .label = Clean metadata and update rankings…
 zsr10-metadata-restore =

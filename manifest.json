@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero 10 Scholar Rank",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "独立实现元数据整理、缩写补全、重复提示；保留 CCF/JCR/中科院指标和备份恢复。",
   "author": "Zotero 10 Scholar Rank contributors",
   "icons": {

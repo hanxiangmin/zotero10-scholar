@@ -12,6 +12,7 @@
     "unsupported-type": "非期刊/会议条目", "no-data": "没有匹配的数据", "invalid-backup": "备份格式异常",
     "manually-edited": "索书号被手动修改，已保护", "existing-call-number": "已有索书号，未覆盖",
     "unchanged": "无需更新", "no-backup": "无插件备份", "read-only": "只读或订阅库",
+    "manual-override": "已手动设定，请先恢复手动覆盖以解除保护",
     "data-unavailable": "原指标所需数据尚未加载，已保留旧值",
     "outdated-data": "JCR 数据早于已保存指标年份，已保留旧值"
   };
@@ -124,15 +125,13 @@
         menuID: "scholar-items", pluginID: this.id, target: "main/library/item",
         menus: [{ menuType: "submenu", l10nID: "zsr10-menu", menus: [
           command("metadata", (items, win) => this.previewMetadata(items, { win })),
+          command("manual", (items, win) => this.previewMetadata(items, { win, manual: true })),
+          command("manual-restore", (items, win) => this.previewMetadata(items, { win, manualRestore: true })),
           command("metadata-restore", (items, win) => this.previewMetadata(items, { win, restore: true })),
           command("duplicates", (items, win) => this.previewMetadata(items, { win, duplicatesOnly: true })),
           command("preview", (items, win) => this.preview(items, win)),
           command("update", (items, win) => this.apply(items, { repairCleared: true, win })),
-          command("overwrite", async (items, win) => {
-            if (Services.prompt.confirm(win, LABEL, "允许替换所选条目现有的索书号？\n\n原值会保存在 Extra 中，可用“恢复原索书号”或 Zotero 撤销恢复。被手动修改的插件结果仍会跳过。")) {
-              await this.apply(items, { allowOverwrite: true, repairCleared: true, win });
-            }
-          }),
+          command("overwrite", (items, win) => this.previewMetadata(items, { win, manual: true, ranksOnly: true })),
           command("restore", async (items, win) => {
             if (Services.prompt.confirm(win, LABEL, "恢复所选条目在首次由本插件更新前的索书号？\n手动修改过的索书号不会被覆盖。")) await this.apply(items, { restore: true, win });
           })
@@ -145,6 +144,28 @@
     },
 
     showSettings() { Zotero.Utilities.Internal.openPreferences(this.prefID); },
+
+    selectedItems() { return this.window()?.ZoteroPane?.getSelectedItems() || []; },
+    async manageSelected(action, win = this.window()) {
+      const items = this.selectedItems();
+      if (!items.some(item => this.supported(item))) {
+        this.alert("请先在 Zotero 主窗口中选中期刊论文或会议论文，再返回此处操作。", win); return;
+      }
+      const modes = { review: {}, ranks: { ranksOnly: true }, manual: { manual: true },
+        restoreManual: { manualRestore: true }, restoreMetadata: { restore: true } };
+      if (!Object.hasOwn(modes, action)) throw new Error("未知的管理操作。");
+      return this.previewMetadata(items, { win, ...modes[action] });
+    },
+
+    rankPlan(before, { restore = false, ...options } = {}) {
+      const manual = Metadata.readManual(before.extra);
+      if (manual.corrupt) return { action: "skip", reason: "invalid-backup" };
+      if (manual.state?.fields.callNumber) return { action: "skip", reason: "manual-override" };
+      return restore ? planRestore(before) : planUpdate(before, this.catalog.lookup(before, this.policy()), options);
+    },
+    confirmManual(win, count) {
+      return Services.prompt.confirm(win, LABEL, `确认覆盖 ${count} 条文献中右侧已修改的字段？\n\n本轮首次覆盖前的值会备份在 Extra 中，可通过“恢复手动覆盖”或 Zotero 撤销恢复。人工设定的字段会保留，不被自动整理或普通指标更新覆盖。未编辑的字段不变。`);
+    },
 
     supported(item) {
       return item?.isRegularItem() && ["journalArticle", "conferencePaper"].includes(item.itemType);
@@ -173,7 +194,7 @@
       let extra = metadata.action === "write" ? metadata.extra : before.extra;
       if (!restore && updateRanks) {
         const working = { ...before, ...fields, extra };
-        const rank = planUpdate(working, this.catalog.lookup(working, this.policy()), { repairCleared });
+        const rank = this.rankPlan(working, { repairCleared });
         if (rank.action === "write") { fields.callNumber = rank.callNumber; extra = rank.extra; }
         else if (!["no-data", "unchanged"].includes(rank.reason)) warnings.push("指标：" + (REASONS[rank.reason] || rank.reason));
       }
@@ -214,9 +235,8 @@
           if (!this.supported(item)) { count("unsupported-type"); continue; }
           if (!this.editable(item)) { count("read-only"); continue; }
           const before = this.snapshot(item);
-          const plan = metadata ? this.metadataPlan(before, { updateRanks, repairCleared }) : restore ? planRestore(before) : planUpdate(
-            before, this.catalog.lookup(before, this.policy()), { allowOverwrite, repairCleared }
-          );
+          const plan = metadata ? this.metadataPlan(before, { updateRanks, repairCleared })
+            : this.rankPlan(before, { restore, allowOverwrite, repairCleared });
           if (plan.action === "write") changes.push({ item, before, plan });
           else count(plan.reason);
         }
@@ -285,21 +305,42 @@
       return new Map(items.map(item => [item.id, lookup(this.snapshot(item))]));
     },
 
-    async previewMetadata(items, { win = this.window(), restore = false, duplicatesOnly = false } = {}) {
+    async previewMetadata(items, { win = this.window(), restore = false, duplicatesOnly = false, manual = false, manualRestore = false, ranksOnly = false } = {}) {
       if (!this.active) return;
       const selected = [...new Map(items.filter(item => this.supported(item)).map(item => [item.id, item])).values()];
       const rows = [], changes = [];
       for (const item of selected) {
         const before = this.snapshot(item);
-        const plan = duplicatesOnly ? { action: "skip", fields: {}, warnings: [] } : this.metadataPlan(before, { restore });
-        const writable = this.editable(item) && plan.action === "write";
+        const rank = ranksOnly && !manual ? this.rankPlan(before, { repairCleared: true }) : null;
+        const plan = manual ? Metadata.planManual(before, {}) : manualRestore ? Metadata.restoreManual(before)
+          : duplicatesOnly ? { action: "skip", fields: {}, warnings: [] }
+          : rank ? { ...rank, fields: rank.action === "write" ? { callNumber: rank.callNumber } : {}, warnings: rank.reason ? [REASONS[rank.reason] || rank.reason] : [] }
+          : this.metadataPlan(before, { restore });
+        const writable = this.editable(item) && (manual ? plan.reason !== "invalid-backup" : plan.action === "write");
         if (writable) changes.push({ item, before, plan });
-        const fields = Object.entries(plan.fields).map(([name, value]) => ({ name, before: before[name], after: value }));
-        rows.push({ id: item.id, title: before.title, fields, writable,
+        const editableFields = (ranksOnly ? ["callNumber"] : Metadata.MANUAL_FIELDS).filter(name => Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(name), item.itemTypeID));
+        const fields = manual ? editableFields.map(name => ({ name, before: before[name], after: before[name] }))
+          : Object.entries(plan.fields).map(([name, value]) => ({ name, before: before[name], after: value }));
+        const suggestions = {};
+        if (manual && writable) {
+          // Suggestions are frozen with the preview and never applied implicitly.
+          // They do not clear unmatched metrics or override source-age safeguards.
+          const working = { ...before, extra: "" };
+          const cleaned = Metadata.plan(working, this.metadataOptions(), this.abbreviations);
+          const result = this.catalog.lookup({ ...working, ...cleaned.fields }, this.policy());
+          const previous = root.ScholarCore.readState(before.extra).state;
+          const missingData = previous && Object.keys(previous.provenance || {}).some(kind => !result.availableKinds?.includes(kind));
+          const olderData = previous?.provenance?.jcr?.metricYear > result.jcrMetricYear;
+          if (!ranksOnly) Object.assign(suggestions, cleaned.fields);
+          if (result.hasData && !missingData && !olderData) suggestions.callNumber = result.text;
+          if (missingData || olderData) plan.warnings.push("数据缺失或年份较早，未提供指标覆盖建议；如确有依据，仍可手动输入。");
+          for (const name of Object.keys(suggestions)) if (!editableFields.includes(name)) delete suggestions[name];
+        }
+        rows.push({ id: item.id, title: before.title, fields, writable, suggestions,
           warnings: [...plan.warnings, ...(!this.editable(item) ? ["只读条目，不能应用修改。"] : [])] });
       }
       let duplicates = new Map(), duplicateWarning = "";
-      if (!restore && (duplicatesOnly || this.pref("metadata.duplicates"))) {
+      if (!restore && !manualRestore && !manual && !ranksOnly && (duplicatesOnly || this.pref("metadata.duplicates"))) {
         try { duplicates = await this.findDuplicates(selected); }
         catch (error) { Zotero.logError(error); duplicateWarning = "重复检查失败；未修改或删除任何条目。"; }
       }
@@ -308,12 +349,30 @@
       let applied = false;
       const dialog = win.openDialog("chrome://zotero10-scholar/content/metadata-preview.xhtml", "",
         "chrome,centerscreen,resizable,width=1050,height=720", {
-          rows, restore, duplicatesOnly, duplicateWarning,
+          rows, restore, duplicatesOnly, duplicateWarning, manual, manualRestore, ranksOnly,
           abbreviationSummary: this.abbreviations.count ? `${this.abbreviations.count} 条缩写；来源：${this.abbreviations.source}` : "未导入缩写表，可在设置中导入 JSON。",
-          apply: async ids => {
+          apply: async (ids, edits = []) => {
             if (applied) throw new Error("本次预览已经应用，请重新打开预览。");
             const idsToApply = new Set(ids);
-            const result = await this.applyReviewed(changes.filter(change => idsToApply.has(change.item.id)));
+            let reviewed = changes.filter(change => idsToApply.has(change.item.id));
+            if (manual) {
+              const inputs = new Map();
+              const available = new Set(reviewed.map(change => change.item.id));
+              for (const edit of edits) {
+                if (!available.has(edit.id) || inputs.has(edit.id)) throw new Error("手动编辑条目不一致。");
+                inputs.set(edit.id, edit.fields);
+              }
+              reviewed = reviewed.map(change => {
+                const values = inputs.get(change.item.id);
+                if (!values || Object.keys(values).some(name => ranksOnly && name !== "callNumber")) throw new Error("缺少或不支持的手动编辑字段。");
+                const plan = Metadata.planManual(change.before, values);
+                if (plan.reason === "invalid-backup") throw new Error("备份异常，未覆盖。");
+                return { ...change, plan };
+              }).filter(change => change.plan.action === "write");
+              if (!reviewed.length) return { written: 0, unchanged: true };
+              if (!this.confirmManual(win, reviewed.length)) return { cancelled: true };
+            }
+            const result = await this.applyReviewed(reviewed);
             applied = true; return result;
           },
           selectDuplicates: async ids => {
@@ -358,7 +417,7 @@
       const rows = items.filter(i => this.supported(i)).map(item => {
         const snapshot = this.snapshot(item);
         const result = this.catalog.lookup(snapshot, this.policy());
-        const plan = planUpdate(snapshot, result, { repairCleared: true });
+        const plan = this.rankPlan(snapshot, { repairCleared: true });
         return { ...snapshot, result, status: !this.editable(item) ? REASONS["read-only"] : plan.action === "write" ? "可更新" : REASONS[plan.reason] };
       });
       const dialog = win.openDialog("chrome://zotero10-scholar/content/preview.xhtml", "", "chrome,centerscreen,resizable,width=1050,height=650", {

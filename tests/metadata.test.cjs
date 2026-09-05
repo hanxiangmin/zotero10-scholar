@@ -84,6 +84,44 @@ test("all rules can be disabled without modifying metadata or backups", () => {
     Object.fromEntries(Object.keys(M.DEFAULTS).map(key => [key, false]))).action, "skip");
 });
 
+test("reviewed manual edits keep independent backups, persist locks and restore their first values", () => {
+  const before = item({ DOI: "doi:10.1234/original", volume: "002" });
+  const cleaned = apply(before, M.plan(before));
+  const manual = apply(cleaned, M.planManual(cleaned, { DOI: "doi:10.1234/manual", volume: "0003", language: "fr", callNumber: "C" }));
+  assert.equal(M.readManual(manual.extra).state.fields.callNumber.original, "QA76");
+  assert.deepEqual(M.readState(manual.extra), M.readState(cleaned.extra));
+  assert.equal(M.plan(manual).action, "skip");
+  assert.equal(M.restore(manual).action, "skip");
+  const revised = apply(manual, M.planManual(manual, { volume: "0004", callNumber: "" }));
+  assert.equal(M.readManual(revised.extra).state.fields.volume.original, "2");
+  assert.deepEqual(apply(revised, M.restoreManual(revised)), cleaned);
+  assert.deepEqual(apply(cleaned, M.restore(cleaned)), before);
+});
+
+test("manual restore protects subsequent outside edits and retains only their remaining backups", () => {
+  const before = item({ callNumber: "QA76" });
+  const manual = apply(before, M.planManual(before, { language: "fr", callNumber: "B" }));
+  const outside = { ...manual, callNumber: "My later shelf" };
+  const restored = apply(outside, M.restoreManual(outside));
+  assert.equal(restored.language, "en");
+  assert.equal(restored.callNumber, outside.callNumber);
+  assert.deepEqual(Object.keys(M.readManual(restored.extra).state.fields), ["callNumber"]);
+});
+
+test("manual plans reject invalid fields, nonstrings, oversized input and damaged backup namespaces", () => {
+  for (const fields of [{ extra: "erase" }, { creators: "x" }, { DOI: null }, { title: "x".repeat(10001) }]) {
+    assert.throws(() => M.planManual(item({}), fields));
+  }
+  for (const prefix of [M.MANUAL_PREFIX, M.PREFIX, "Zotero Scholar Rank: "]) {
+    assert.equal(M.planManual(item({ extra: prefix + "{bad" }), { callNumber: "C" }).reason, "invalid-backup");
+  }
+  const valid = M.planManual(item({}), { callNumber: "C" }).extra.split(M.MANUAL_PREFIX)[1];
+  const corrupt = item({ extra: M.MANUAL_PREFIX + valid + "\n" + M.MANUAL_PREFIX + valid, DOI: "doi:10.1234/x" });
+  assert.equal(M.plan(corrupt).reason, "invalid-backup");
+  assert.equal(M.restoreManual(corrupt).reason, "invalid-backup");
+  assert.equal(M.planManual(item({}), { callNumber: "QA76" }).action, "skip");
+});
+
 test("duplicate hints are library scoped, normalize DOI and require manual review for titles", () => {
   const title = "A deliberately fictional title for testing duplicate lookup";
   const items = [
