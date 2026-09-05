@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build a public XPI without tables, or explicitly opt into a personal data build."""
+"""Build the single XPI with all three locally supplied metric tables.
+
+Building for local use does not grant permission to redistribute third-party data.
+Missing tables are an error; this builder never produces an incomplete variant.
+"""
 import argparse
 import hashlib
 import json
@@ -38,10 +42,10 @@ def validate_manifest(manifest):
         raise ValueError("strict_min_version must not contain a wildcard")
 
 
-def build(out_dir: Path, *, with_data: bool = False) -> dict:
+def build(out_dir: Path) -> dict:
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     validate_manifest(manifest)
-    files = FILES + (DATA_FILES if with_data else [])
+    files = FILES + DATA_FILES
     contents = {}
     for name in files:
         if not (ROOT / name).is_file():
@@ -49,8 +53,7 @@ def build(out_dir: Path, *, with_data: bool = False) -> dict:
         contents[name] = (ROOT / name).read_bytes()
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    suffix = "-personal" if with_data else ""
-    path = out_dir / f"zotero10-scholar-{manifest['version']}{suffix}.xpi"
+    path = out_dir / f"zotero10-scholar-{manifest['version']}.xpi"
     temp = path.with_suffix(".tmp")
     with zipfile.ZipFile(temp, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for name in sorted(files):
@@ -65,18 +68,15 @@ def build(out_dir: Path, *, with_data: bool = False) -> dict:
     with zipfile.ZipFile(path) as archive:
         assert sorted(archive.namelist()) == sorted(files)
         assert archive.testzip() is None
-    return {"file": str(path), "bytes": path.stat().st_size, "sha256": digest, "files": len(files),
-            "mode": "personal-with-data" if with_data else "public-without-data"}
+    return {"file": str(path), "bytes": path.stat().st_size, "sha256": digest, "files": len(files)}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", type=Path, default=ROOT / "dist")
-    parser.add_argument("--with-data", action="store_true",
-                        help="Include locally supplied third-party tables; do not publicly distribute without permission")
     args = parser.parse_args()
     try:
-        result = build(args.out, with_data=args.with_data)
+        result = build(args.out)
     except (OSError, ValueError) as error:
         parser.exit(1, f"Build failed: {error}\n")
     print(json.dumps(result, ensure_ascii=False))

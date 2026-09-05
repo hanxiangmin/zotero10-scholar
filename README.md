@@ -1,9 +1,13 @@
-# Scholar Rank · 元数据与学术分区
+# Zotero 10 Scholar Rank · CCF / JCR / 中科院分区
 
-**Zotero 10 · 3.1.2 本地开发版 · MIT**
+**Zotero 10 · 元数据整理 · DOI 更新 · 学术指标 · MIT**
 
-独立实现元数据整理、DOI 信息更新，以及 CCF、影响因子、JCR、2025 中科院大类分区/TOP 的索书号显示。
-本版保存在 `E:\GitHub\Tools\zotero10-scholar-next`，尚未发布到 GitHub Release。
+在索书号中显示 CCF 等级、影响因子、JCR 分区、2025 中科院大类分区/TOP，同时提供元数据整理和手动 DOI 信息更新。不使用新锐分区替代中科院分区。
+
+## 3.1.2 重构
+
+本次重构将界面统一为三个操作，删除自定义备份、恢复、预览和单独覆盖流程。
+只维护一个版本、一个内置指标表的安装包，不再区分个人版和公开版；导入数据仅用于后续更新内置表。
 
 ## 三个入口
 
@@ -18,15 +22,16 @@
 
 ## 安装与使用
 
-1. 在 Zotero **工具 → 插件 → 从文件安装插件** 中安装 `dist/zotero10-scholar-3.1.2.xpi`，不要解压。本版沿用原插件 ID，可直接升级。
-2. 公开安装包不含第三方指标表；在 **工具 → Scholar Rank 设置** 导入有权使用的 CCF/JCR/CAS JSON。期刊缩写表单独导入。
+> 3.1.2 重构源码已提供；内置完整指标表的安装包须确认数据再分发授权后才上传 [Releases](https://github.com/hanxiangmin/zotero10-scholar/releases)。现有旧版附件不是本次重构版。
+
+1. 安装包名称统一为 `zotero10-scholar-3.1.2.xpi`。在 Zotero **工具 → 插件 → 从文件安装插件** 中安装，不要解压；沿用原插件 ID，可直接升级。
+2. 安装包内置 CCF/JCR/CAS 表，无需首次导入。更新表或添加可选期刊缩写表，可在 **工具 → Scholar Rank 设置** 中导入有权使用的 JSON。
 3. 在主窗口选中文献，右键 **Scholar Rank**，选择以上三个操作之一。设置页也有相同的三个按钮。
 4. 设置中可分别开启“新增条目时自动整理元数据”和“新增条目时自动更新分区指标”。默认关闭，自动模式仅填空索书号；**DOI 联网更新始终只能手动执行**。
 
 DOI 更新不会清空未返回的字段，不改条目类型、附件、笔记、标签、Extra 或索书号。DOI 不一致、类型不同或查询失败时跳过。需要刷新分区时再点击“更新分区指标”。
 指标年份以本地导入数据为准，不自动下载新年度数据。
 
-个人使用的 `dist/zotero10-scholar-3.1.2-personal.xpi` 含本地指标表，不能作为公开安装包上传。
 [完整说明](docs/INSTALL.md) · [数据格式](docs/DATA_FORMAT.md)
 
 > [!WARNING]
@@ -44,14 +49,15 @@ python scripts/build.py
 python scripts/export-source.py
 ```
 
+构建前须在 `data/` 准备完整指标表；缺少任一表会报错，不生成缺数据的安装包。公开源码不附整表，CI 使用合成数据验证打包。[数据准备](data/README.md)
+
 `src/core.js` 负责指标匹配，`src/metadata.js` 负责整理及 DOI 返回字段的校验，`src/plugin.js` 负责 Zotero 接口、菜单、查询和事务写入。
 [开发说明](docs/DEVELOPMENT.md) · [测试说明](docs/TESTING.md) · [修改记录](CHANGELOG.md)
 
 ## 来源与许可证
 
 软件采用 [MIT](LICENSE)，不包含第三方指标数据的再分发许可。
-指标显示流程参考 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank)，由本项目面向 Zotero 10 重新实现。
-元数据需求参考 [northword/zotero-format-metadata](https://github.com/northword/zotero-format-metadata)，未移植其源码、测试、词表、图标或数据；不声称覆盖 Linter 全部功能。
-DOI 查询调用已安装 Zotero 的原生查询器，不随本项目分发其实现。[来源说明](NOTICE.md)
+感谢 [SiriusXT/Zotero-Scholar-Rank](https://github.com/SiriusXT/Zotero-Scholar-Rank) 的指标展示设计，以及 [Linter for Zotero](https://github.com/northword/zotero-format-metadata) 的元数据整理思路。本项目独立实现，未移植两者的源码、图标或词表。
+本地转换脚本适配 [ShowJCR](https://github.com/hitfyd/ShowJCR) 的 CSV 格式；DOI 查询调用 Zotero 自带接口。[许可范围与来源说明](NOTICE.md)
 
 维护与需求：**hanxiangmin**。代码、测试与文档协助：**OpenAI Codex**。

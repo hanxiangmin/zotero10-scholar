@@ -4,6 +4,7 @@
   "version": "3.1.2",
   "description": "Zotero 10：元数据整理、手动 DOI 信息更新、CCF/影响因子/JCR/2025 中科院分区；三个入口，直接更新。",
   "author": "Zotero 10 Scholar Rank contributors",
+  "homepage_url": "https://github.com/hanxiangmin/zotero10-scholar",
   "icons": {
     "128": "assets/icon.svg"
   },

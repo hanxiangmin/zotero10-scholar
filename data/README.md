@@ -25,14 +25,13 @@ python scripts/import-showjcr.py ShowJCR-master.zip
 表结构和年份不符合时会拒绝转换，不能把更名后的文件当作新年份数据。
 `data/SOURCES.md` 是本地转换生成的审计记录，随真实数据留在本地，不进入公开源码包。
 
-## 加载与构建
+## 内置与更新
 
-在插件设置中分别导入三个 JSON，无需重新构建。文件写入当前 Zotero 数据目录下的
+只有一个内置数据安装包。准备上述三个 JSON 和本地 `data/SOURCES.md` 后，运行 `python scripts/build.py`；
+缺少任一文件都会报错，不提供缺数据构建或另一种安装包。源码公开不代表其中涉及的数据已获再分发授权，含表 XPI 发布前仍须核实。
+
+安装后可在插件设置中分别导入新的 JSON，无需重新构建。文件写入当前 Zotero 数据目录下的
 `zotero10-scholar/ccf.json`、`jcr.json`、`cas.json`，重启后继续使用。
-可以只加载部分来源；没有匹配项不会伪造指标，缺少旧结果所需来源时会保护旧结果。
-
-若需要个人使用的内置数据包，可运行 `python scripts/build.py --with-data`。
-该包以 `-personal.xpi` 结尾，不应在未取得数据再分发权时公开上传。
-默认构建命令始终排除真实数据，即使 `data/` 中存在这些文件。
+没有匹配项不会伪造指标；一个来源的本地导入不会删除其他内置来源。
 
 自行整理的 JSON 也可以使用，格式见 [数据格式](../docs/DATA_FORMAT.md)。

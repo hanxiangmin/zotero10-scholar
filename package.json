@@ -23,7 +23,6 @@
   "scripts": {
     "test": "node --test tests/core.test.cjs tests/metadata.test.cjs tests/plugin.test.cjs",
     "build": "python scripts/build.py",
-    "build:personal": "python scripts/build.py --with-data",
     "export:source": "python scripts/export-source.py"
   }
 }

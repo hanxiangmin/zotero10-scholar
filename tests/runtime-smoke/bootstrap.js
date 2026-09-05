@@ -268,7 +268,7 @@ async function runSmoke(rootURI) {
     schemaVersion: 1, status: "running", startedAt: new Date().toISOString(),
     zoteroVersion: Zotero.version, safety: smokeContext,
     product: { id: PRODUCT_ID, version: smokeConfig.productVersion, stagedSha256: smokeConfig.productSha256 },
-    withData: smokeConfig.withData, mode: smokeConfig.withData ? "personal-data" : "public-no-data",
+    withData: smokeConfig.withData, mode: "bundled-data",
     autoClose: { enabled: smokeConfig.autoClose }, fixtures: {}, steps: [], previewReady: false
   };
   await persistReport();

@@ -1,4 +1,4 @@
-"""Public packaging must never pick up private data or legacy files by default."""
+"""The single XPI requires metric tables and excludes unrelated local files."""
 import importlib.util
 import json
 from pathlib import Path
@@ -19,7 +19,7 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
-        for name in builder.FILES:
+        for name in builder.FILES + builder.DATA_FILES:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"synthetic package file\n")
@@ -29,28 +29,26 @@ class BuildTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def add_private_files(self):
-        for name in builder.DATA_FILES + ["legacy/old.xpi", "work/private.log", "ShowJCR-master.zip", ".env"]:
+        for name in ["data/unrelated.json", "legacy/old.xpi", "work/private.log", "ShowJCR-master.zip", ".env"]:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"PRIVATE FIXTURE, NOT FOR PUBLIC RELEASE")
 
-    def test_default_build_excludes_all_private_and_legacy_files(self):
+    def test_single_build_bundles_required_tables_but_excludes_unrelated_files(self):
         self.add_private_files()
         result = builder.build(self.root / "dist")
-        self.assertEqual(result["mode"], "public-without-data")
+        self.assertEqual(Path(result["file"]).name, f"zotero10-scholar-{self.manifest['version']}.xpi")
         with ZipFile(result["file"]) as archive:
             self.assertIsNone(archive.testzip())
-            self.assertEqual(set(archive.namelist()), set(builder.FILES))
+            self.assertEqual(set(archive.namelist()), set(builder.FILES + builder.DATA_FILES))
             self.assertFalse(any(b"PRIVATE FIXTURE" in archive.read(name) for name in archive.namelist()))
 
-    def test_personal_build_requires_explicit_opt_in_and_has_distinct_filename(self):
-        self.add_private_files()
-        public = builder.build(self.root / "dist")
-        personal = builder.build(self.root / "dist", with_data=True)
-        self.assertNotEqual(public["file"], personal["file"])
-        self.assertTrue(personal["file"].endswith("-personal.xpi"))
-        with ZipFile(personal["file"]) as archive:
-            self.assertEqual(set(archive.namelist()), set(builder.FILES + builder.DATA_FILES))
+    def test_missing_table_cannot_silently_create_an_incomplete_variant(self):
+        (self.root / "data/jcr-2025.json").unlink()
+        output = self.root / "uncreated"
+        with self.assertRaisesRegex(ValueError, "data/jcr-2025.json"):
+            builder.build(output)
+        self.assertFalse(output.exists())
 
     def test_same_sources_produce_same_xpi_and_hash(self):
         first = builder.build(self.root / "first")
@@ -59,9 +57,9 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(first["sha256"], second["sha256"])
         self.assertEqual(Path(first["file"] + ".sha256").read_text().split()[0], first["sha256"])
 
-    def test_missing_private_input_fails_before_creating_output(self):
+    def test_removed_variant_option_cannot_create_a_second_variant(self):
         output = self.root / "uncreated"
-        with self.assertRaisesRegex(ValueError, "Missing package file"):
+        with self.assertRaises(TypeError):
             builder.build(output, with_data=True)
         self.assertFalse(output.exists())
 

@@ -10,7 +10,7 @@ profile path and canonical data path are all required before it can write.
 It runs once per prepared profile; create a fresh profile to repeat a test.
 The script prints a PowerShell launch command for a human/the root agent to
 execute separately. It does not change signature checks or install policies.
-Both complete personal XPIs and public XPIs without metric data are supported.
+The single product XPI must include all three metric tables.
 With --auto-close, only the newly prepared instance will request a normal quit
 after its guarded test report is saved; no Zotero process is started here.
 """
@@ -62,9 +62,9 @@ def prepare(product: Path, executable: Path, *, auto_close: bool = False) -> dic
             raise ValueError("Rebuild the product XPI before preparing a smoke test")
         dataset_files = {"data/ccf-2026.json", "data/jcr-2025.json", "data/cas-2025.json"}
         included_datasets = names & dataset_files
-        if included_datasets and included_datasets != dataset_files:
-            raise ValueError("A smoke-test product must contain all three datasets or none; partial data bundles are refused")
-        with_data = bool(included_datasets)
+        if included_datasets != dataset_files:
+            raise ValueError("Rebuild the single product XPI with all three metric tables before testing")
+        with_data = True
         if any(name.startswith(("tests/", "scripts/", "work/")) or "runtime-smoke" in name for name in names):
             raise ValueError("The product XPI must not include test hooks or development scripts")
         product_manifest = json.loads(archive.read("manifest.json"))
@@ -185,7 +185,7 @@ def prepare(product: Path, executable: Path, *, auto_close: bool = False) -> dic
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     version = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))["version"]
-    parser.add_argument("--product", type=Path, default=ROOT / "dist" / f"zotero10-scholar-{version}-personal.xpi")
+    parser.add_argument("--product", type=Path, default=ROOT / "dist" / f"zotero10-scholar-{version}.xpi")
     parser.add_argument("--zotero", type=Path, default=Path("C:/Program Files/Zotero/zotero.exe"))
     parser.add_argument("--auto-close", action="store_true",
                         help="After saving the guarded native-test report, request a normal quit of only the newly prepared instance")
