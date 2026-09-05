@@ -110,34 +110,76 @@
     if (!index) return { record: null, reason: "no-dataset" };
     const found = normalizeISSNs(item.ISSN).flatMap(issn => index.issns.get(issn) || [])
       .filter(record => index.dataset.kind !== "ccf" || record.type === "journal");
-    if (found.length) return pickUnique(found, "ISSN");
     const prefix = index.dataset.kind === "ccf" ? "journal:" : "";
     const exact = index.names.get(prefix + normalizeTitle(item.publicationTitle)) || [];
+    if (found.length) {
+      if (exact.length && !found.some(record => exact.includes(record))) {
+        return { record: null, reason: "journal-identity-conflict" };
+      }
+      return pickUnique(found, "ISSN");
+    }
     if (exact.length) return pickUnique(exact, "title");
     // Use the abbreviation only when the full title did not match. Ambiguous
     // acronyms do not override an exact publication title or an ISSN.
     return pickUnique(index.names.get(prefix + normalizeTitle(item.journalAbbreviation)) || [], "abbreviation");
   }
 
-  function conferenceMatch(index, item) {
+  function conferenceName(value, abbreviation = "") {
+    // Only edition/sponsor decorations are optional, never subject words.
+    // Some IJCAI imports join the ordinal to International (ThirdInternational).
+    const ordinal = "(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth)";
+    let name = normalizeTitle(value).replace(new RegExp("\\b(" + ordinal + ")(?=international\\b)", "g"), "$1 ");
+    const short = normalizeTitle(abbreviation);
+    if (short) {
+      // normalizeTitle leaves only letters, digits and spaces: safe in a RegExp.
+      const suffix = new RegExp("(?:^| )" + short + "(?: (?:\\d{2}|(?:19|20)\\d{2}))?$");
+      const match = suffix.exec(name);
+      if (match) name = match.index ? name.slice(0, match.index).trim() : short;
+    }
+    name = name.replace(/\s+(?:19|20)\d{2}$/, "");
+    const leading = new RegExp("^(?:(?:proceedings|of|the|ieee|acm|cvf|iapr|international|annual|conference|on|\\d+(?:st|nd|rd|th)?|" + ordinal + ")\\s+)+");
+    name = name.replace(leading, "");
+    // SIGKDD may precede either 'Conference' or 'International Conference'.
+    if (short && name.startsWith(short + " ")) name = name.slice(short.length).trim().replace(leading, "");
+    return name.replace(/\s+conference$/, "");
+  }
+
+  function conferenceMatch(index, item, { fullOnly = false } = {}) {
     if (!index) return { record: null, reason: "no-dataset" };
     const names = [item.conferenceName, item.proceedingsTitle].filter(Boolean);
     // A parent conference name does not turn a Workshop/Findings paper into a full paper.
     if (names.some(n => EXCLUDED_CONFERENCE.test(n))) return { record: null, reason: "excluded-conference-track" };
-    const exact = names.flatMap(n => index.names.get("conference:" + normalizeTitle(n)) || []);
-    if (exact.length) return pickUnique(exact, "conference-title");
-    const candidates = [];
+    const candidates = [], acronyms = [];
     for (const record of index.dataset.records) {
       if (record.type !== "conference") continue;
       for (const name of [record.title, ...record.aliases, record.abbreviation]) {
-        const key = normalizeTitle(name);
-        // Short acronyms like AI are unsafe in a longer proceedings title.
-        if (key.length < 3) continue;
-        if (names.some(n => (` ${normalizeTitle(n)} `).includes(` ${key} `))) candidates.push({ record, length: key.length });
+        const key = conferenceName(name, record.abbreviation);
+        if (!key) continue;
+        const full = key.split(" ").length >= 2;
+        if (full && names.some(n => conferenceName(n, record.abbreviation) === key)) {
+          candidates.push({ record, length: key.length });
+        } else if (!full && key.length >= 3 && names.some(n => (` ${normalizeTitle(n)} `).includes(` ${key} `))) {
+          acronyms.push({ record, key });
+        }
       }
     }
-    const longest = Math.max(0, ...candidates.map(c => c.length));
-    return pickUnique(candidates.filter(c => c.length === longest).map(c => c.record), "conference-alias");
+    if (candidates.length) {
+      const consistent = candidates.filter(({ record }) => {
+        const keys = [record.title, ...record.aliases, record.abbreviation]
+          .filter(Boolean).map(n => conferenceName(n, record.abbreviation));
+        return names.every(n => keys.includes(conferenceName(n, record.abbreviation)));
+      });
+      return consistent.length ? pickUnique(consistent.map(c => c.record), "conference-title")
+        : { record: null, reason: "conference-name-conflict" };
+    }
+    if (fullOnly) return { record: null, reason: "not-found" };
+    // An acronym may identify an acronym-only venue, but must not override an
+    // accompanying, incompatible full name (e.g. Chinese Control Conference).
+    const safe = acronyms.filter(({ record, key }) => names.every(n => conferenceName(n, record.abbreviation) === key));
+    if (safe.length) return pickUnique(safe.map(c => c.record), "conference-acronym");
+    const rejected = pickUnique(acronyms.map(c => c.record), "conference-acronym");
+    return rejected.record ? { record: null, reason: "conference-name-conflict", rejectedRank: rejected.record.rank }
+      : { record: null, reason: rejected.reason };
   }
 
   function selectQuartile(quartiles, policy = "best") {
@@ -163,8 +205,12 @@
       if (!["journalArticle", "conferencePaper"].includes(item.itemType)) {
         return { supported: false, reason: "unsupported-type", text: "", hasData: false };
       }
-      const conference = item.itemType === "conferencePaper";
-      const ccf = conference ? conferenceMatch(this.indexes.ccf, item) : journalMatch(this.indexes.ccf, item);
+      const proceedings = item.itemType === "journalArticle"
+        && /\bproceedings\b/i.test(item.publicationTitle || "") && /\b(?:conference|symposium|meeting)\b/i.test(item.publicationTitle || "");
+      const proceedingsMatch = proceedings ? conferenceMatch(this.indexes.ccf, { proceedingsTitle: item.publicationTitle }, { fullOnly: true }) : null;
+      const conference = item.itemType === "conferencePaper" || Boolean(proceedingsMatch?.record)
+        || proceedingsMatch?.reason === "excluded-conference-track";
+      const ccf = proceedingsMatch && conference ? proceedingsMatch : conference ? conferenceMatch(this.indexes.ccf, item) : journalMatch(this.indexes.ccf, item);
       const jcr = conference ? { record: null, reason: "not-applicable" } : journalMatch(this.indexes.jcr, item);
       const cas = conference ? { record: null, reason: "not-applicable" } : journalMatch(this.indexes.cas, item);
       const fields = [ccf.record?.rank || MISSING,
@@ -187,6 +233,7 @@
       const visibleFields = fields.filter(field => field !== MISSING);
       return {
         supported: true, text: visibleFields.join("|"), hasData: visibleFields.length > 0,
+        ...(ccf.rejectedRank ? { rejectedRank: ccf.rejectedRank } : {}),
         fields, provenance, policy, availableKinds: Object.keys(this.indexes),
         jcrMetricYear: this.indexes.jcr?.dataset.metricYear,
         reasons: Object.fromEntries(Object.entries(matches).map(([k, v]) => [k, v.reason || "matched"]))
@@ -198,6 +245,8 @@
   // only fills an empty field. Neither path reads or writes Extra.
   function planUpdate(item, result, { allowOverwrite = true } = {}) {
     if (!result.supported) return { action: "skip", reason: "unsupported-type" };
+    // Failure to identify a venue is not evidence that an old rank is wrong.
+    // In particular, manual overwrite must never turn a failed lookup into deletion.
     if (!result.hasData || !result.text) return { action: "skip", reason: "no-data" };
     const current = String(item.callNumber || "");
     if (current === result.text) return { action: "skip", reason: "unchanged" };

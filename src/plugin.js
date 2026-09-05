@@ -2,6 +2,8 @@
   "use strict";
   const { Catalog, planUpdate } = root.ScholarCore;
   const Metadata = root.ScholarMetadata;
+  const Search = root.ScholarSearch;
+  const Reports = root.ScholarReports;
   const PREF = "extensions.zotero10scholar.";
   const LABEL = "Zotero 10 Scholar Rank";
   // Zotero awaits item observers in ascending priority order. Linter for
@@ -14,7 +16,12 @@
     "unchanged": "无需更新", "read-only": "只读或订阅库", "invalid-doi": "没有有效 DOI",
     "doi-mismatch": "DOI 不一致或结果不唯一", "doi-type-mismatch": "返回的文献类型不同",
     "lookup-failed": "DOI 查询失败，保留原值", "duplicates": "疑似重复（仅提示，未合并）",
-    "duplicate-check-failed": "重复检查失败"
+    "duplicate-check-failed": "重复检查失败", "conference-date-unverified": "会议年份缺少可靠记录，日期未覆盖",
+    "update-failed": "更新失败，本批修改未保存",
+    "search-insufficient": "无 DOI 且标题、作者或出版信息不足，未查询",
+    "search-no-match": "未找到信息一致的可信结果，保留原值",
+    "search-ambiguous": "匹配到多个不同 DOI，保留原值",
+    "search-failed": "标题联网检索失败，保留原值"
   };
 
   const plugin = {
@@ -22,6 +29,8 @@
 
     async start({ id, version, rootURI }) {
       Object.assign(this, { id, version, rootURI, active: true });
+      this.resultWindows = new Set();
+      this.autoResult = null;
       this.storageDir = PathUtils.join(Zotero.DataDirectory.dir, "zotero10-scholar");
       const files = [["ccf", "ccf-2026.json"], ["jcr", "jcr-2025.json"], ["cas", "cas-2025.json"]];
       const datasets = [];
@@ -35,8 +44,8 @@
           if (data.kind !== kind) throw new Error("内置数据包类型不一致");
           builtin = data;
         } catch (_) {
-          // Public releases deliberately omit third-party tables. Imported
-          // local packages below must still work without a bundled baseline.
+          // A corrupt/missing bundled table may be replaced by a valid local
+          // import. Otherwise surface a warning rather than guessing values.
         }
         let selected = builtin;
         const override = PathUtils.join(this.storageDir, kind + ".json");
@@ -75,7 +84,8 @@
             await Zotero.Promise.delay(500);
             if (!this.active) return;
             if (!this.pref("autoNew") && !this.pref("metadata.auto")) return;
-            const items = (await Zotero.Items.getAsync(ids)).filter(Boolean);
+            const items = (await Zotero.Items.getAsync(ids)).filter(item => this.supported(item));
+            if (!items.length) return;
             await this.apply(items, { silent: true, automatic: true, metadata: Boolean(this.pref("metadata.auto")), updateRanks: Boolean(this.pref("autoNew")) });
           }).catch(e => Zotero.logError(e));
         }
@@ -93,6 +103,9 @@
       if (this.observer != null) Zotero.Notifier.unregisterObserver(this.observer);
       if (this.currentOperation) await this.currentOperation;
       await this.pendingAuto;
+      for (const dialog of this.resultWindows) if (!dialog.closed) dialog.close();
+      this.resultWindows.clear();
+      this.autoResult = null;
       for (const key of this.menuIDs) Zotero.MenuManager.unregisterMenu(key);
       this.menuIDs = [];
       if (this.prefID) Zotero.PreferencePanes.unregister(this.prefID);
@@ -104,7 +117,7 @@
     safeRun(task, win) {
       Promise.resolve().then(task).catch(error => {
         Zotero.logError(error);
-        if (this.active) this.alert("操作失败，未继续写入。\n" + error.message, win);
+        if (this.active && !error.scholarResultShown) this.alert("操作失败，未继续写入。\n" + error.message, win);
       });
     },
     alert(message, win = this.window()) { Services.prompt.alert(win, LABEL, message); },
@@ -169,11 +182,12 @@
     policy() { return ["best", "worst", "all"].includes(this.pref("quartilePolicy")) ? this.pref("quartilePolicy") : "best"; },
 
     metadataOptions() {
-      return Object.fromEntries(Object.entries(Metadata.DEFAULTS).map(([name, fallback]) => [name, this.pref("metadata." + name) ?? fallback]));
+      return { ...Object.fromEntries(Object.entries(Metadata.DEFAULTS).map(([name, fallback]) => [name, this.pref("metadata." + name) ?? fallback])),
+        titleCase: this.pref("metadata.titleCase") || "sentence", protectedTerms: this.pref("metadata.protectedTerms") || "" };
     },
 
     metadataPlan(before, { updateRanks = false, automatic = false } = {}) {
-      const metadata = Metadata.plan(before, this.metadataOptions(), this.abbreviations);
+      const metadata = Metadata.plan(before, this.metadataOptions(), this.abbreviations, this.catalog);
       const fields = { ...metadata.fields }, warnings = [...metadata.warnings];
       if (updateRanks) {
         const rank = this.rankPlan({ ...before, ...fields }, { automatic });
@@ -183,11 +197,38 @@
         : { action: "skip", reason: "unchanged", fields, warnings };
     },
 
-    showResult(counts, win) {
-      const lines = [`已更新 ${counts.written || 0} 条。`];
-      for (const [key, value] of Object.entries(counts)) if (key !== "written") lines.push(`${REASONS[key] || key}：${value}`);
-      this.status = lines.join("；");
-      if (win) this.alert(lines.join("\n"), win);
+    showResult(counts, win, changes = [], { operation = "更新分区指标", automatic = false, silent = false } = {}) {
+      const report = Reports.create(operation, counts, changes, REASONS);
+      this.status = report.summary.join("；");
+      if (!this.active || (silent && !automatic)) return;
+      try {
+        // One nonmodal window per manual batch. Automatic batches share the
+        // currently open automatic result window without interrupting imports.
+        if (automatic && this.autoResult && !this.autoResult.win.closed) {
+          this.autoResult.data.batches.push(report);
+          this.autoResult.win.dispatchEvent(new this.autoResult.win.Event("scholar-rank-results"));
+          return;
+        }
+        const owner = win?.openDialog ? win : this.window();
+        if (!owner) return;
+        const data = { batches: [report], automatic };
+        const dialog = owner.openDialog("chrome://zotero10-scholar/content/results.xhtml", "",
+          "chrome,dialog=no,resizable,centerscreen", data);
+        this.resultWindows.add(dialog);
+        if (automatic) this.autoResult = { win: dialog, data };
+        dialog.addEventListener("unload", event => {
+          // openDialog first unloads about:blank before loading our page.
+          // That event must not discard a newly opened result window.
+          if (event.target?.documentURI !== "chrome://zotero10-scholar/content/results.xhtml") return;
+          this.resultWindows.delete(dialog);
+          if (this.autoResult?.win === dialog) this.autoResult = null;
+        });
+      } catch (error) {
+        // Saving already committed. A display failure must not be reported as
+        // a failed update or cause a second write attempt.
+        Zotero.logError(error);
+        this.alert("更新结果窗口未能打开。\n\n" + Reports.toText(report), win);
+      }
     },
 
     beginOperation() {
@@ -211,6 +252,8 @@
       }
       const finish = this.beginOperation();
       const counts = {}, changes = [], seen = new Set();
+      const operation = metadata ? (updateRanks ? "整理元数据及更新分区指标" : "整理元数据") : "更新分区指标";
+      let committed = false;
       const count = reason => { counts[reason] = (counts[reason] || 0) + 1; };
       try {
         for (const item of items) {
@@ -224,7 +267,8 @@
           if (plan.action === "write") changes.push({ item, before, plan });
           else count(plan.reason);
         }
-        await this.saveChanges(changes, counts);
+        const saved = await this.saveChanges(changes, counts);
+        committed = true;
         if (metadata && !automatic && this.pref("metadata.duplicates") && this.active) {
           try {
             const snapshots = [];
@@ -240,14 +284,20 @@
             if (duplicateCount) counts.duplicates = duplicateCount;
           } catch (error) { Zotero.logError(error); counts["duplicate-check-failed"] = 1; }
         }
-        this.showResult(counts, silent ? null : win);
+        this.showResult(counts, win, saved, { operation, automatic, silent });
         return counts;
+      } catch (error) {
+        if (!committed && this.active) {
+          this.showResult({ "update-failed": 1 }, win, [], { operation, automatic, silent });
+          error.scholarResultShown = !silent || automatic;
+        }
+        throw error;
       } finally { finish(); }
     },
 
     async saveChanges(changes, counts) {
-      if (!changes.length) return;
-      const touched = [];
+      if (!changes.length) return [];
+      const touched = [], saved = [];
       try {
         await Zotero.DB.executeTransaction(async () => {
           let written = 0;
@@ -266,12 +316,15 @@
             for (const [field, value] of Object.entries(fields)) item.setField(field, value);
             if (plan.creators) item.setCreators(plan.creators);
             await item.save({ skipSelect: true });
-            written++;
+            const changed = Reports.changedItem(before, this.snapshot(item), [...Object.keys(fields), ...(plan.creators ? ["creators"] : [])]);
+            if (changed) { saved.push(changed); written++; }
           }
           if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
           if (written) Zotero.UndoHistory.stageAction("undo-action-edit-metadata", { count: written });
           counts.written = written;
         });
+        // Only return diffs once the entire transaction has committed.
+        return saved;
       } catch (error) {
         for (const item of touched) await item.reload(null, true).catch(e => Zotero.logError(e));
         throw error;
@@ -290,36 +343,75 @@
             const translators = await search.getTranslators();
             if (!translators.length) throw new Error("未找到可用的 DOI 查询器。");
             search.setTranslator(translators);
-            return search.translate({ libraryID: false, saveAttachments: false });
+            const items = await search.translate({ libraryID: false, saveAttachments: false });
+            try {
+              // Crossref supplies explicit ConferenceInfo/event dates that the
+              // native flattened date field loses. Never send library content.
+              const response = await Zotero.HTTP.request("GET", "https://api.crossref.org/works/" + encodeURIComponent(doi),
+                { responseType: "json", timeout: 15000 });
+              const data = response.response?.message;
+              if (Metadata.doiKey(data?.DOI) === Metadata.doiKey(doi)) {
+                for (const item of items) item.scholarCrossref = data;
+              }
+            } catch (error) { Zotero.debug?.("Scholar Rank: supplementary DOI date lookup unavailable."); }
+            return items;
           })(),
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("DOI 查询超时。")), 45000); })
         ]);
       } finally { clearTimeout(timer); }
     },
 
+    async lookupTitle(query) {
+      const parameters = [["query.bibliographic",query.bibliographic],["query.author",query.author],["rows","20"]];
+      const url = "https://api.crossref.org/works?" + parameters.map(([name,value])=>`${name}=${encodeURIComponent(value)}`).join("&");
+      const response = await Zotero.HTTP.request("GET", url, { responseType:"json", timeout:15000 });
+      const records = response.response?.message?.items;
+      if (!Array.isArray(records)) throw new Error("联网检索返回格式异常。");
+      return records;
+    },
+
+    // Keep the method name for existing callers; this is the manual online
+    // command, with DOI-first lookup and an empty-DOI bibliographic fallback.
     async updateByDOI(items, { win = this.window(), silent = false } = {}) {
       if (!this.active) return;
       if (this.busy) { this.alert("上一批更新尚未结束，请稍后再试。", win); return; }
-      const finish = this.beginOperation(), counts = {}, changes = [], cache = new Map();
+      const finish = this.beginOperation(), counts = {}, changes = [], cache = new Map(), searches = new Map();
+      let committed = false;
       const selected = [...new Map(items.filter(Boolean).map(item => [item.id, item])).values()];
       const count = reason => { counts[reason] = (counts[reason] || 0) + 1; };
       try {
         for (const [index, item] of selected.entries()) {
           if (!this.active) return;
-          this.status = `DOI 查询 ${index + 1}/${selected.length}`;
+          this.status = `联网核对 ${index + 1}/${selected.length}`;
           if (!this.supported(item)) { count("unsupported-type"); continue; }
           if (!this.editable(item)) { count("read-only"); continue; }
-          const before = this.snapshot(item), doi = Metadata.doiKey(before.DOI);
-          if (!doi) { count("invalid-doi"); continue; }
+          const before = this.snapshot(item);
+          let doi = Metadata.doiKey(before.DOI), discovered = null;
+          if (!doi) {
+            if (before.DOI.trim()) { count("invalid-doi"); continue; }
+            const query = Search.query(before);
+            if (!query) { count("search-insufficient"); continue; }
+            let records;
+            try {
+              if (!searches.has(query.cacheKey)) searches.set(query.cacheKey, this.lookupTitle(query));
+              records = await searches.get(query.cacheKey);
+            } catch (error) { Zotero.logError(error); count("search-failed"); continue; }
+            if (!this.active) return;
+            const match = Search.select(before, records, this.catalog);
+            if (!match.record) { count(match.reason); continue; }
+            discovered = match.record; doi = Metadata.doiKey(discovered.DOI);
+          }
           let sources;
           try {
-            if (!cache.has(doi)) cache.set(doi, this.lookupDOI(Metadata.cleanDOI(before.DOI)));
+            if (!cache.has(doi)) cache.set(doi, this.lookupDOI(Metadata.cleanDOI(discovered?.DOI || before.DOI)));
             sources = await cache.get(doi);
           } catch (error) { Zotero.logError(error); count("lookup-failed"); continue; }
           if (!this.active) return;
           const matches = (Array.isArray(sources) ? sources : []).filter(source => Metadata.doiKey(source?.DOI) === doi);
           if (matches.length !== 1) { count("doi-mismatch"); continue; }
-          const plan = Metadata.doiPlan(before, matches[0]);
+          const plan = discovered ? Search.resolvedPlan(before, discovered, matches[0], this.metadataOptions(), this.catalog)
+            : Metadata.doiPlan(before, matches[0], this.metadataOptions(), this.catalog);
+          if (plan.dateUnverified) count("conference-date-unverified");
           for (const field of Object.keys(plan.fields)) {
             if (!Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), item.itemTypeID)) delete plan.fields[field];
           }
@@ -329,9 +421,16 @@
           if (plan.action === "write" && (Object.keys(plan.fields).length || plan.creators)) changes.push({ item, before, plan });
           else count(plan.reason || "unchanged");
         }
-        await this.saveChanges(changes, counts);
-        this.showResult(counts, silent ? null : win);
+        const saved = await this.saveChanges(changes, counts);
+        committed = true;
+        this.showResult(counts, win, saved, { operation: "联网更新元数据", silent });
         return counts;
+      } catch (error) {
+        if (!committed && this.active) {
+          this.showResult({ "update-failed": 1 }, win, [], { operation: "联网更新元数据", silent });
+          error.scholarResultShown = !silent;
+        }
+        throw error;
       } finally { finish(); }
     },
 

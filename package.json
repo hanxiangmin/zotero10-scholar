@@ -1,9 +1,9 @@
 {
   "name": "zotero10-scholar",
-  "version": "3.1.2",
+  "version": "3.1.4",
   "license": "MIT",
   "private": true,
-  "description": "Zotero 10：元数据整理、手动 DOI 信息更新、CCF/影响因子/JCR/2025 中科院分区；三个入口，直接更新。",
+  "description": "Zotero 10：元数据整理、DOI 优先与无 DOI 联网核对、CCF/JCR/2025 中科院分区；更新后展示修改对照。",
   "keywords": [
     "zotero",
     "zotero-plugin",

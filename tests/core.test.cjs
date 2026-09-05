@@ -165,14 +165,14 @@ test("ISSN parsing validates checksums, accepts X, and deduplicates print/electr
   ]), ["0162-8828", "1939-3539", "2434-561X"]);
 });
 
-test("an ISSN match has priority over a conflicting publication title", () => {
+test("a known ISSN and a different known journal name are a conflict, never silently mixed", () => {
   const catalog = new Catalog([dataset("jcr", [
     jcrJournal({ jif: 5.2 }),
     jcrJournal({ title: "Different Journal", issns: ["0162-8828"], jif: 99 })
   ])]);
   const result = catalog.lookup(journal({ publicationTitle: "Different Journal", ISSN }));
-  assert.equal(result.fields[1], "5.2");
-  assert.equal(result.provenance.jcr.matchedBy, "ISSN");
+  assert.equal(result.hasData, false);
+  assert.equal(result.reasons.jcr, "journal-identity-conflict");
 });
 
 test("ambiguous ISSNs fail closed even when the title could break the tie", () => {
@@ -257,6 +257,87 @@ test("conference acronyms must be complete tokens, not parts of CVPRW or MYCVPR"
   for (const proceedingsTitle of ["Proceedings of CVPRW 2026", "Proceedings of MYCVPR 2026"]) {
     assert.equal(conferenceCatalog().lookup({ itemType: "conferencePaper", proceedingsTitle }).hasData, false);
   }
+});
+
+test("conference full names reject acronym collisions without deleting any existing rank", () => {
+  const catalog = new Catalog([dataset("ccf", [{ type: "conference", title: "Conference on Computational Complexity", abbreviation: "CCC", rank: "B" }])]);
+  const input = { itemType: "conferencePaper", conferenceName: "CCC", proceedingsTitle: "2018 37th Chinese Control Conference (CCC)", callNumber: "B" };
+  const result = catalog.lookup(input);
+  assert.equal(result.hasData, false);
+  assert.equal(result.reasons.ccf, "conference-name-conflict");
+  assert.deepEqual(planUpdate(input, result), { action: "skip", reason: "no-data" });
+  assert.equal(planUpdate(input, result, { allowOverwrite: false }).action, "skip");
+  assert.equal(planUpdate({ ...input, callNumber: "QA76" }, result).action, "skip");
+  assert.equal(catalog.lookup({ ...input, proceedingsTitle: "Conference on Computational Complexity 2026" }).text, "B");
+  assert.equal(catalog.lookup({ itemType: "conferencePaper", conferenceName: "CCC" }).text, "B");
+});
+
+test("KDD and IJCAI report spellings match full venues and restore cleared ranks", () => {
+  const records = [
+    { type: "conference", title: "ACM SIGKDD Conference on Knowledge Discovery and Data Mining", abbreviation: "SIGKDD", rank: "A" },
+    { type: "conference", title: "International Joint Conference on Artificial Intelligence", abbreviation: "IJCAI", rank: "B" }
+  ];
+  const catalog = new Catalog([dataset("ccf", records)]);
+  // Exact venue strings from the user-provided report; grades use the 2026 edition.
+  for (const [conferenceName, proceedingsTitle, rank] of [
+    ["", "Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining", "A"],
+    ["IJCAI", "Proceedings of the Twenty-Eighth International Joint Conference on Artificial Intelligence", "B"],
+    ["Twenty-Seventh International Joint Conference on Artificial Intelligence {IJCAI-18}", "Proceedings of the Twenty-Seventh International Joint Conference on Artificial Intelligence", "B"],
+    ["Thirty-Third International Joint Conference on Artificial Intelligence {IJCAI-24}", "Proceedings of the Thirty-ThirdInternational Joint Conference on Artificial Intelligence", "B"]
+  ]) {
+    const item = { itemType: "conferencePaper", conferenceName, proceedingsTitle, callNumber: "" };
+    const result = catalog.lookup(item);
+    assert.equal(result.text, rank, proceedingsTitle);
+    assert.deepEqual(planUpdate(item, result), { action: "write", callNumber: rank });
+    assert.equal(planUpdate({ ...item, callNumber: rank }, result).reason, "unchanged");
+    // Each nonempty field also stands alone: metadata standardization uses this.
+    for (const value of [conferenceName, proceedingsTitle].filter(Boolean))
+      assert.equal(catalog.lookup({ itemType: "conferencePaper", proceedingsTitle: value }).text, rank, value);
+    for (const ending of [" Workshops", " Findings", " Companion"])
+      assert.equal(catalog.lookup({ ...item, proceedingsTitle: proceedingsTitle + ending }).hasData, false);
+  }
+});
+
+test("full conference matches cannot hide conflicting fields or remove subject words", () => {
+  const catalog = conferenceCatalog();
+  for (const proceedingsTitle of [
+    "Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition in Medicine",
+    "Proceedings of a Different Conference (CVPR)",
+    "International Conference on Pattern Recognition"
+  ]) {
+    const item = { itemType: "conferencePaper", conferenceName: CVPR, proceedingsTitle, callNumber: "A" };
+    const result = catalog.lookup(item);
+    assert.equal(result.hasData, false, proceedingsTitle);
+    assert.equal(planUpdate(item, result).action, "skip");
+  }
+});
+
+test("a missing IEEE sponsor does not prevent an otherwise exact ICASSP full-name match", () => {
+  const catalog = new Catalog([dataset("ccf", [{ type: "conference", title: "IEEE International Conference on Acoustics,Speech and Signal Processing", abbreviation: "ICASSP", rank: "B" }])]);
+  const result = catalog.lookup({ itemType: "conferencePaper", proceedingsTitle: "International Conference on Acoustics, Speech, and Signal Processing" });
+  assert.equal(result.text, "B");
+  assert.equal(catalog.lookup({ itemType: "conferencePaper", proceedingsTitle: "International Conference on Other Signal Processing (ICASSP)" }).hasData, false);
+});
+
+test("CVPR cannot fall back to the shorter, different Pattern Recognition conference", () => {
+  const catalog = new Catalog([dataset("ccf", [
+    { type: "conference", title: "IEEE/CVF Computer Vision and Pattern Recognition Conference", abbreviation: "CVPR", rank: "A" },
+    { type: "conference", title: "International Conference on Pattern Recognition", abbreviation: "ICPR", rank: "C" }
+  ])]);
+  assert.equal(catalog.lookup({ itemType: "conferencePaper", conferenceName: "CVPR", proceedingsTitle: "Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition" }).text, "A");
+  assert.equal(catalog.lookup({ itemType: "conferencePaper", proceedingsTitle: "International Conference on Unknown Pattern Recognition" }).hasData, false);
+  assert.equal(catalog.lookup({ itemType: "conferencePaper", conferenceName: "IEEE/CVF Computer Vision and Pattern Recognition Conference", proceedingsTitle: "International Conference on Pattern Recognition" }).reasons.ccf,"conference-name-conflict");
+});
+
+test("AAAI proceedings stored as a journal article get the conference rank without changing item type", () => {
+  const catalog = new Catalog([dataset("ccf", [{ type: "conference", title: "AAAI Conference on Artificial Intelligence", abbreviation: "AAAI", rank: "A" }])]);
+  const item = journal({ publicationTitle: "Proceedings of the AAAI Conference on Artificial Intelligence", ISSN: "2374-3468" });
+  const result = catalog.lookup(item);
+  assert.equal(result.text, "A");
+  assert.equal(result.reasons.jcr, "not-applicable");
+  assert.equal(item.itemType, "journalArticle");
+  assert.equal(catalog.lookup({ ...item, publicationTitle: "Proceedings of the AAAI Conference on Artificial Intelligence Workshops" }).hasData, false);
+  assert.equal(catalog.lookup({ ...item, publicationTitle: "AAAI" }).hasData, false);
 });
 
 test("unknown venues and preprints never produce a write plan", () => {

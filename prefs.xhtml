@@ -2,17 +2,18 @@
       xmlns:html="http://www.w3.org/1999/xhtml" onload="Zotero_Preferences.getScope('zotero10-scholar-settings').ScholarRankPrefs.init(window)">
   <groupbox>
     <label><html:h2>Scholar Rank</html:h2></label>
-    <description>整理元数据 · 根据 DOI 更新文献信息 · 更新分区指标</description>
+    <description>整理元数据 · 联网更新元数据 · 更新分区指标</description>
     <html:p id="zsr10-selection-summary"></html:p>
     <html:div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
       <html:button id="zsr10-metadata">整理元数据</html:button>
-      <html:button id="zsr10-doi">根据 DOI 更新</html:button>
+      <html:button id="zsr10-doi">联网更新元数据</html:button>
       <html:button id="zsr10-ranks">更新分区指标</html:button>
     </html:div>
     <html:p id="zsr10-operation-status" role="status"></html:p>
     <description>先在主窗口选中文献，再点击对应操作。元数据整理与分区更新分开执行。</description>
-    <description>根据 DOI 更新仅手动执行，返回的文献信息直接覆盖旧值；未返回或查询失败的内容保持原样，不改附件、笔记和索书号。</description>
-    <description>分区指标直接写入索书号，未匹配时保留原值。支持 Zotero 原生撤销。</description>
+    <description>联网更新仅手动执行：优先按 DOI 查询；没有 DOI 时按标题、作者和出版信息检索 Crossref，唯一可信匹配才补全 DOI 并覆盖字段。多个候选或信息不足时不修改。</description>
+    <description>会议采用明确的会议年份，期刊采用正式卷期日期；会议年份无法确认时保留原日期。不改附件、笔记和索书号。</description>
+    <description>分区指标直接写入索书号。未匹配或会议名称冲突时保留原值，不清空已有指标。支持 Zotero 原生撤销。</description>
   </groupbox>
   <groupbox>
     <label><html:h3>自动处理</html:h3></label>
@@ -20,12 +21,20 @@
     <html:label style="margin:8px 0"><html:input id="zsr10-auto-new" type="checkbox"/> 新增条目时自动更新分区指标</html:label>
     <html:p id="zsr10-auto-status" role="status"></html:p>
     <description>开关即时保存，默认关闭。两者都开启时先整理再更新指标；自动模式仅填空索书号，手动更新可覆盖已有值。</description>
-    <description>自动处理不联网查询 DOI，也不自动下载年度指标表。</description>
+    <description>自动处理不联网查询文献信息，也不自动下载年度指标表。</description>
   </groupbox>
   <groupbox>
     <label><html:h3>整理规则</html:h3></label>
     <html:div id="zsr10-metadata-rules" style="display:grid;gap:8px;margin:10px 0"></html:div>
-    <description>标题只整理空白，保留大小写和专业词，富文本不自动改写。语言仅保守补全空值；期刊缩写仅按本地导入表补全空值。</description>
+    <html:label for="zsr10-title-case">英文标题格式：</html:label>
+    <html:select id="zsr10-title-case" style="margin:8px 0;max-width:420px">
+      <html:option value="sentence">句首及冒号后首字母大写</html:option>
+      <html:option value="preserve">保留大小写，仅整理空白</html:option>
+    </html:select>
+    <html:label for="zsr10-protected-terms">额外保留写法的术语（空格或逗号分隔）：</html:label>
+    <html:input id="zsr10-protected-terms" type="text" maxlength="10000" placeholder="例如：ResNet iPhone" style="margin:8px 0"/>
+    <description>保留 MRI、fMRI、ccRCC 等术语和混合大小写模型名；其他专名可在上面补充。整理与 DOI 更新采用同一标题规则，富文本不自动改写。语言和期刊缩写仅补全空值。</description>
+    <description>已识别的会议名称与论文集标题统一为标准全称，不附加年份；年份由日期字段保存。Workshop、名称冲突或未匹配会议不强行改名。</description>
     <html:p id="zsr10-abbreviation-summary" style="white-space:pre-wrap"></html:p>
     <html:button id="zsr10-import-abbreviations">导入期刊缩写 JSON…</html:button>
   </groupbox>

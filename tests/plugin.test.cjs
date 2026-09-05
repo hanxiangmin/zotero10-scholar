@@ -9,6 +9,8 @@ const vm = require("node:vm");
 const test = require("node:test");
 const Core = require("../src/core.js");
 const Metadata = require("../src/metadata.js");
+const Reports = require("../src/reports.js");
+const Search = require("../src/search.js");
 
 const PLUGIN_CODE = fs.readFileSync(path.join(__dirname, "../src/plugin.js"), "utf8");
 const PAMI = "IEEE TRANSACTIONS ON PATTERN ANALYSIS AND MACHINE INTELLIGENCE";
@@ -48,8 +50,8 @@ function fixtureDatasets() {
 
 async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), fastTimeout = false } = {}) {
   const state = {
-    items: new Map(), persisted: new Map(), alerts: [], errors: [], saveIDs: [], reloadIDs: [],
-    doiResponses: new Map(), doiLookups: [], commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
+    items: new Map(), persisted: new Map(), alerts: [], errors: [], saveIDs: [], reloadIDs: [], dialogs: [],
+    doiResponses: new Map(), doiLookups: [], crossrefResponses: new Map(), crossrefLookups: [], titleResponses: [], titleLookups: [], commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
     transactionGate: null, pickerQueue: [], inputFiles: new Map(),
     outputFiles: new Map([...localFiles].map(([filename, data]) => [filename, structuredClone(data)])),
     writes: [], beforeWrite: null, autoNew: true, resourceReads: [], localReads: [],
@@ -74,6 +76,16 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     }
   }
 
+  const mainWindow = { openDialog(url, name, features, data) {
+    const listeners = new Map();
+    const dialog = { url, name, features, data, closed: false, Event, events: [],
+      addEventListener: (type, callback) => listeners.set(type, callback),
+      dispatchEvent(event) { this.events.push(event.type); listeners.get(event.type)?.(event); },
+      close() { this.closed = true; listeners.get("unload")?.({target:{documentURI:url}}); }
+    };
+    state.dialogs.push(dialog);
+    return dialog;
+  } };
   const Zotero = {
     DataDirectory: { dir: "C:/MOCK-ZOTERO" },
     File: {
@@ -85,7 +97,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
       }
     },
     ftl: { addResourceIds() {}, removeResourceIds() {} },
-    getMainWindows: () => [], getMainWindow: () => null,
+    getMainWindows: () => [], getMainWindow: () => mainWindow,
     MenuManager: {
       registerMenu: config => {
         state.activeMenus.add(config.menuID);
@@ -130,6 +142,21 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
         return await value || [];
       }
     } },
+    HTTP: { request: async (method, url, options) => {
+      assert.equal(method, "GET"); assert.equal(options.responseType, "json"); assert.equal(options.timeout, 15000);
+      if (url.startsWith("https://api.crossref.org/works?")) {
+        state.titleLookups.push(url);
+        const value=await state.titleResponses;
+        if(value instanceof Error)throw value;
+        return {response:{message:{items:value}}};
+      }
+      assert.ok(url.startsWith("https://api.crossref.org/works/"));
+      const doi = decodeURIComponent(url.slice("https://api.crossref.org/works/".length));
+      state.crossrefLookups.push(doi);
+      const value = state.crossrefResponses.get(doi);
+      if (!value || value instanceof Error) throw value || new Error("No synthetic Crossref response");
+      return { response: { message: value } };
+    } },
     CreatorTypes: { getID: name => name, isValidForItemType: name => ["author","editor","contributor","translator"].includes(name) },
     ItemFields: { getID: name => name, isValidForType: () => true },
     UndoHistory: { stageAction: (action, args) => state.undoActions.push({ action, args }) },
@@ -167,7 +194,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     }
   };
   const scope = {
-    ScholarCore: Core, ScholarMetadata: Metadata, Zotero, IOUtils, clearTimeout,
+    ScholarCore: Core, ScholarMetadata: Metadata, ScholarSearch: Search, ScholarReports: Reports, Zotero, IOUtils, clearTimeout,
     setTimeout: (callback, ms) => setTimeout(callback, fastTimeout && ms === 45000 ? 1 : ms),
     PathUtils: { join: (...parts) => parts.join("/") },
     ChromeUtils: { importESModule: () => ({ FilePicker }) },
@@ -509,7 +536,7 @@ test("DOI failures, invalid identifiers, ambiguous responses, and read-only item
   state.doiResponses.set("10.1234/good",[remote("10.1234/good")]);
   const before=records.map(record=>structuredClone(record.fields));
   const counts=await plugin.updateByDOI(records,{silent:true});
-  assert.equal(counts.written,1); assert.equal(counts["invalid-doi"],1); assert.equal(counts["lookup-failed"],1); assert.equal(counts["doi-mismatch"],1); assert.equal(counts["read-only"],1);
+  assert.equal(counts.written,1); assert.equal(counts["search-insufficient"],1); assert.equal(counts["lookup-failed"],1); assert.equal(counts["doi-mismatch"],1); assert.equal(counts["read-only"],1);
   for(let i=0;i<4;i++) assert.deepEqual(records[i].fields,before[i]);
   assert.equal(state.doiLookups.includes("10.1234/readonly"),false);
 });
@@ -548,4 +575,224 @@ test("a timed-out native DOI query cannot write when the late response eventuall
   gate.resolve([remote("10.1234/late")]); await tick();
   assert.equal(state.saveIDs.length,0); assert.deepEqual(record.fields,before);
   assert.equal(plugin.busy,false);
+});
+
+test("supplementary Crossref dates are DOI-only, cached, and applied by the manual command", async () => {
+  const {plugin,state,item}=await harness();
+  const record=item(200,{DOI:"10.1234/x",title:"Old title",date:"2026"});
+  record.itemType="conferencePaper";
+  state.doiResponses.set("10.1234/x",[remote("10.1234/x",{itemType:"bookSection",title:"HGTL: a Test for CcRCC",date:"2026"})]);
+  state.crossrefResponses.set("10.1234/x",{DOI:"10.1234/x",type:"book-chapter",title:["HGTL: a Test for CcRCC"],
+    assertion:[{group:{name:"ConferenceInfo"},name:"conference_year",value:"2025"}]});
+  assert.equal((await plugin.updateByDOI([record],{silent:true})).written,1);
+  assert.equal(record.fields.date,"2025"); assert.equal(record.fields.title,"HGTL: A test for ccRCC");
+  assert.deepEqual(state.crossrefLookups,["10.1234/x"]);
+  assert.equal(record.itemType,"conferencePaper"); assert.equal(record.fields.extra,"User note");
+  assert.equal(record.fields.scholarCrossref,undefined);
+});
+
+test("a failed supplementary date request leaves conference date intact while other fields update", async () => {
+  const {plugin,state,item}=await harness();
+  const record=item(201,{DOI:"10.1234/x",date:"2025"});record.itemType="conferencePaper";
+  state.doiResponses.set("10.1234/x",[remote("10.1234/x",{itemType:"conferencePaper",date:"2026"})]);
+  state.crossrefResponses.set("10.1234/x",new Error("429"));
+  const counts=await plugin.updateByDOI([record],{silent:true});
+  assert.equal(counts.written,1); assert.equal(counts["conference-date-unverified"],1);
+  assert.equal(record.fields.date,"2025"); assert.equal(record.fields.title,"A returned paper title");
+});
+
+test("automatic metadata standardizes conference names offline while rank-only updates do not", async () => {
+  const {plugin,state,item}=await harness();
+  const standard="International Conference on Medical Image Computing and Computer-Assisted Intervention";
+  plugin.catalog.replace({schemaVersion:1,kind:"ccf",edition:2026,source:"Synthetic",records:[{type:"conference",title:standard,abbreviation:"MICCAI",rank:"B"}]});
+  const record=item(210,{DOI:"10.1234/x",conferenceName:"MICCAI",proceedingsTitle:"MICCAI-2005",date:"2025",callNumber:"Keep"});
+  record.itemType="conferencePaper";
+  await plugin.apply([record],{silent:true});
+  assert.equal(record.fields.callNumber,"B");assert.equal(record.fields.conferenceName,"MICCAI");
+  state.preferences["metadata.auto"]=true;state.autoNew=false;
+  state.observer.notify("add","item",[record.id]);await plugin.pendingAuto;
+  assert.equal(record.fields.conferenceName,standard);assert.equal(record.fields.proceedingsTitle,standard);
+  assert.equal(record.fields.date,"2025");assert.equal(record.fields.callNumber,"B");
+  assert.equal(state.doiLookups.length,0);assert.equal(state.crossrefLookups.length,0);
+});
+
+test("each manual update reports only committed fields with complete before and after values", async () => {
+  const {plugin,state,item}=await harness();
+  const record=item(220,{title:"A Study: a Model",DOI:"doi:10.1234/x",language:"en",callNumber:"C"});
+  await plugin.apply([record],{metadata:true});
+  const metadata=state.dialogs[0].data.batches[0];
+  assert.equal(metadata.operation,"整理元数据");
+  assert.deepEqual(metadata.items[0].changes.find(change=>change.field==="title"),
+    {field:"title",label:"标题",before:"A Study: a Model",after:"A study: A model"});
+  assert.ok(metadata.items[0].changes.every(change=>!["callNumber","extra","date"].includes(change.field)));
+  assert.equal(metadata.items[0].changes.find(change=>change.field==="DOI").before,"doi:10.1234/x");
+  await plugin.apply([record]);
+  const ranks=state.dialogs[1].data.batches[0];
+  assert.equal(ranks.operation,"更新分区指标");
+  assert.deepEqual(ranks.items[0].changes,[{field:"callNumber",label:"索书号（分区指标）",before:"C",after:"A|20.4|Q1|1区TOP"}]);
+  state.doiResponses.set("10.1234/x",[remote("10.1234/x")]);
+  await plugin.updateByDOI([record]);
+  const doi=state.dialogs[2].data.batches[0];
+  assert.equal(doi.operation,"联网更新元数据");
+  assert.deepEqual(doi.items[0].changes.find(change=>change.field==="date"),{field:"date",label:"日期",before:"",after:"2025"});
+  assert.deepEqual(doi.items[0].changes.find(change=>change.field==="creators"),{field:"creators",label:"作者及贡献者",before:"",after:"作者：Author, New"});
+  assert.ok(doi.items[0].changes.every(change=>!["callNumber","extra"].includes(change.field)));
+  assert.equal(state.commits,3); assert.equal(state.alerts.length,0);
+});
+
+test("automatic updates open and reuse a nonmodal result window, including empty results", async () => {
+  const {plugin,state,item}=await harness();
+  state.preferences["metadata.auto"]=true;
+  const first=item(230,{DOI:"doi:10.1234/x"}),second=item(231,{DOI:"doi:10.1234/y"});
+  state.observer.notify("add","item",[first.id,second.id]);await plugin.pendingAuto;
+  assert.equal(state.dialogs.length,1);
+  const dialog=state.dialogs[0];
+  assert.equal(dialog.data.automatic,true);
+  dialog.dispatchEvent({type:"unload",target:{documentURI:"about:blank"}});
+  assert.equal(plugin.autoResult.win,dialog);assert.equal(plugin.resultWindows.has(dialog),true);
+  assert.equal(dialog.features.includes("modal"),false);
+  assert.equal(dialog.data.batches[0].items.length,2);
+  assert.ok(dialog.data.batches[0].items.every(row=>row.changes.some(change=>change.field==="DOI")&&row.changes.some(change=>change.field==="callNumber")));
+  state.observer.notify("add","item",[first.id]);await plugin.pendingAuto;
+  assert.equal(state.dialogs.length,1); assert.equal(dialog.data.batches.length,2);
+  assert.equal(dialog.data.batches[1].items.length,0);
+  assert.match(Reports.toText(dialog.data.batches[1]),/没有修改任何字段/);
+  assert.deepEqual(dialog.events,["unload","scholar-rank-results"]);
+  dialog.close();
+  state.observer.notify("add","item",[first.id]);await plugin.pendingAuto;
+  assert.equal(state.dialogs.length,2);
+  assert.equal(state.doiLookups.length,0);
+  await plugin.stop(); assert.equal(state.dialogs[1].closed,true);
+  assert.equal(plugin.resultWindows.size,0); assert.equal(plugin.autoResult,null);
+});
+
+test("reports exclude read-only, unchanged and concurrently edited items, but explain skip counts", async () => {
+  const {plugin,state,item}=await harness();
+  const records=[item(240),item(241),item(242,{callNumber:"A|20.4|Q1|1区TOP"}),item(243)];
+  records[1].isEditable=()=>false;
+  const gate=deferred();state.transactionGate=gate;
+  const updating=plugin.apply(records);
+  await state.transactionRequested.promise;
+  records[3].fields.title="User correction";gate.resolve();await updating;
+  const report=state.dialogs[0].data.batches[0];
+  assert.deepEqual(Array.from(report.items,row=>row.id),[240]);
+  assert.deepEqual(report.counts,{"read-only":1,unchanged:1,"manually-edited":1,written:1});
+  assert.match(Reports.toText(report),/处理期间条目发生变化/);
+  assert.equal(Reports.toText(report).includes("User correction"),false);
+});
+
+test("rolled-back batches never display a success diff and release operation state", async () => {
+  const {plugin,state,item}=await harness();
+  const records=[item(250),item(251)]; records[1].saveError=new Error("save failed");
+  await assert.rejects(plugin.apply(records),/save failed/);
+  assert.equal(state.dialogs.length,1); assert.equal(state.rollbacks,1);
+  const report=state.dialogs[0].data.batches[0];
+  assert.equal(report.items.length,0);assert.match(Reports.toText(report),/本批修改未保存/);
+  assert.equal(plugin.busy,false); assert.equal(plugin.currentOperation,null);
+});
+
+test("an update with no DOI response still opens an explicit no-change report", async () => {
+  const {plugin,state,item}=await harness();
+  state.doiResponses.set("10.1234/fail",new Error("offline"));
+  await plugin.updateByDOI([item(260,{DOI:"10.1234/fail"}),item(261,{DOI:""})]);
+  const report=state.dialogs[0].data.batches[0];
+  assert.equal(report.items.length,0);
+  assert.match(Reports.toText(report),/DOI 查询失败/);
+  assert.match(Reports.toText(report),/无 DOI 且标题、作者或出版信息不足/);
+  assert.match(Reports.toText(report),/本次没有修改任何字段/);
+});
+
+test("a result window failure reports committed changes without retrying the save", async () => {
+  const {plugin,state,item}=await harness();
+  await plugin.apply([item(270)],{win:{openDialog(){throw new Error("window unavailable");}}});
+  assert.equal(state.commits,1);assert.deepEqual(state.saveIDs,[270]);
+  assert.match(state.alerts[0],/更新结果窗口未能打开/);
+  assert.match(state.alerts[0],/修改前：（空）/);
+  assert.match(state.alerts[0],/修改后：A\|20.4\|Q1\|1区TOP/);
+  assert.equal(plugin.busy,false);
+});
+
+test("report formatting preserves author order, empty changes and untrusted text as plain data", () => {
+  const longText="<img src=x onerror=alert(1)>".repeat(100);
+  const before={id:1,title:longText,callNumber:"B",creators:[{creatorType:"author",firstName:"Old",lastName:"Person"}]};
+  const after={...before,callNumber:"",creators:[{creatorType:"editor",name:"Team <script>"},{creatorType:"author",firstName:"New",lastName:"Person"}]};
+  const row=Reports.changedItem(before,after,["callNumber","creators","title"]);
+  assert.equal(row.title,longText);
+  assert.equal(row.changes[0].after,"");
+  assert.equal(row.changes[1].after,"编辑：Team <script>\n作者：Person, New");
+  assert.equal(Reports.changedItem(before,before,["title"]),null);
+});
+
+const noDOIFields = () => ({title:"A fictional study of neural cells",DOI:"",date:"2025",publicationTitle:PAMI,
+  creators:[{creatorType:"author",firstName:"Jane",lastName:"Smith"}],extra:"PRIVATE NOTE",abstractNote:"PRIVATE ABSTRACT",callNumber:"Keep"});
+const foundRecord = () => ({DOI:"10.1234/found",type:"journal-article",title:["A fictional study of neural cells"],author:[{given:"Jane",family:"Smith"}],
+  "container-title":[PAMI],ISSN:["0162-8828"],"published-print":{"date-parts":[[2026]]}});
+const foundSource = () => remote("10.1234/found",{...noDOIFields(),DOI:"10.1234/found",date:"2026"});
+
+test("manual online update uses DOI first, searches only absent DOI, and reports a genuinely empty original DOI", async () => {
+  const {plugin,state,item}=await harness();
+  const records=[item(280,{DOI:"10.1234/existing"}),item(281,noDOIFields()),item(282,noDOIFields())];
+  state.doiResponses.set("10.1234/existing",[remote("10.1234/existing")]);
+  state.titleResponses=[foundRecord()];state.doiResponses.set("10.1234/found",[foundSource()]);state.crossrefResponses.set("10.1234/found",foundRecord());
+  assert.equal((await plugin.updateByDOI(records)).written,3);
+  assert.deepEqual(state.doiLookups,["10.1234/existing","10.1234/found"]);assert.equal(state.titleLookups.length,1);
+  const params=new URL(state.titleLookups[0]).searchParams;
+  assert.deepEqual([...params.keys()],["query.bibliographic","query.author","rows"]);
+  assert.equal(params.get("query.author"),"Jane Smith");assert.equal(params.get("rows"),"20");
+  assert.equal(decodeURIComponent(state.titleLookups[0]).includes("PRIVATE"),false);
+  const report=state.dialogs[0].data.batches[0];
+  for(const record of records.slice(1)) {
+    assert.equal(record.fields.DOI,"10.1234/found");assert.equal(record.fields.date,"2026");
+    assert.equal(record.fields.extra,"PRIVATE NOTE");assert.equal(record.fields.callNumber,"Keep");
+    const change=report.items.find(row=>row.id===record.id).changes.find(row=>row.field==="DOI");
+    assert.equal(change.before,"");assert.equal(change.after,"10.1234/found");
+  }
+  assert.equal((await plugin.updateByDOI(records.slice(1),{silent:true})).unchanged,2);
+  assert.equal(state.titleLookups.length,1);
+});
+
+test("failed or invalid existing DOIs never trigger a title search", async () => {
+  const {plugin,state,item}=await harness();
+  const bad=item(283,{...noDOIFields(),DOI:"malformed"}),failed=item(284,{...noDOIFields(),DOI:"10.1234/fail"});
+  state.doiResponses.set("10.1234/fail",new Error("offline"));
+  const result=await plugin.updateByDOI([bad,failed]);
+  assert.equal(result["invalid-doi"],1);assert.equal(result["lookup-failed"],1);
+  assert.equal(state.titleLookups.length,0);assert.equal(state.saveIDs.length,0);
+});
+
+test("title search failures and ambiguous matches leave all metadata and the empty DOI unchanged", async () => {
+  for(const [response,reason] of [[new Error("429"),"search-failed"],[[],"search-no-match"],[[foundRecord(),{...foundRecord(),DOI:"10.1234/other"}],"search-ambiguous"]]) {
+    const {plugin,state,item}=await harness(),record=item(285,noDOIFields()),before=structuredClone(record.fields);
+    state.titleResponses=response;
+    assert.equal((await plugin.updateByDOI([record]))[reason],1);
+    assert.deepEqual(record.fields,before);assert.equal(state.doiLookups.length,0);assert.equal(state.saveIDs.length,0);
+    assert.match(Reports.toText(state.dialogs[0].data.batches[0]),/本次没有修改任何字段/);
+  }
+});
+
+test("a DOI or author edit during title search invalidates the saved plan without overwriting it", async () => {
+  for(const change of [{DOI:"10.1234/user-correction"},{creators:[{creatorType:"author",name:"User author correction"}]}]) {
+    const {plugin,state,item}=await harness(),record=item(286,noDOIFields()),gate=deferred();
+    state.titleResponses=gate.promise;state.doiResponses.set("10.1234/found",[foundSource()]);
+    const updating=plugin.updateByDOI([record],{silent:true});await tick();Object.assign(record.fields,change);
+    gate.resolve([foundRecord()]);assert.equal((await updating)["manually-edited"],1);
+    assert.equal(state.saveIDs.length,0);
+    for(const [key,value] of Object.entries(change))assert.deepEqual(record.fields[key],value);
+  }
+});
+
+test("disabling during a title search prevents subsequent DOI lookup and writes", async () => {
+  const {plugin,state,item}=await harness(),record=item(287,noDOIFields()),gate=deferred();
+  state.titleResponses=gate.promise;
+  const updating=plugin.updateByDOI([record],{silent:true});await tick();
+  const stopping=plugin.stop();gate.resolve([foundRecord()]);await updating;await stopping;
+  assert.equal(state.doiLookups.length,0);assert.equal(state.saveIDs.length,0);assert.equal(state.dialogs.length,0);
+});
+
+test("automatic cleanup and ranks never call the new title-search endpoint", async () => {
+  const {plugin,state,item}=await harness();state.preferences["metadata.auto"]=true;state.autoNew=true;
+  const record=item(288,{...noDOIFields(),callNumber:""});
+  state.observer.notify("add","item",[record.id]);await plugin.pendingAuto;
+  assert.equal(record.fields.DOI,"");assert.equal(record.fields.callNumber,"A|20.4|Q1|1区TOP");
+  assert.equal(state.titleLookups.length,0);assert.equal(state.doiLookups.length,0);
 });

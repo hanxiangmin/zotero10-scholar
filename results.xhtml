@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+        xmlns:html="http://www.w3.org/1999/xhtml"
+        title="Scholar Rank · 更新结果" windowtype="zotero10-scholar:results"
+        width="980" height="680" orient="vertical">
+  <html:style>
+    :root { color-scheme: light dark; }
+    window { background: Canvas; color: CanvasText; font: 14px/1.6 system-ui, sans-serif; }
+    .layout { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 20px 24px; box-sizing: border-box; }
+    h1 { font-size: 21px; margin: 0; }
+    .intro { margin: 4px 0 14px; opacity: .75; }
+    #zsr10-results-list { flex: 1; min-height: 0; overflow: auto; padding-right: 8px; }
+    .batch { margin-bottom: 26px; }
+    h2 { font-size: 16px; margin: 0 0 4px; }
+    .summary { margin: 0 0 14px; white-space: pre-wrap; }
+    h3 { font-size: 14px; margin: 14px 0 8px; overflow-wrap: anywhere; }
+    table { border-collapse: collapse; table-layout: fixed; width: 100%; margin-bottom: 16px; }
+    th, td { border: 1px solid color-mix(in srgb, CanvasText 22%, Canvas); padding: 9px 11px; text-align: left; vertical-align: top; }
+    th { background: color-mix(in srgb, CanvasText 6%, Canvas); font-weight: 600; }
+    th:first-child { width: 16%; }
+    td { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    td.after { background: color-mix(in srgb, #18864b 8%, Canvas); }
+    .empty { opacity: .65; font-style: italic; }
+    footer { display: flex; justify-content: flex-end; padding-top: 14px; }
+    button { padding: 6px 24px; font: inherit; }
+  </html:style>
+  <html:div class="layout">
+    <html:header>
+      <html:h1 id="zsr10-results-heading">更新结果</html:h1>
+      <html:p class="intro">以下为本次实际保存的修改，可使用 Zotero 原生撤销。</html:p>
+    </html:header>
+    <html:main id="zsr10-results-list" aria-label="逐条修改对照" tabindex="0"/>
+    <html:footer><html:button id="zsr10-results-close" type="button">关闭</html:button></html:footer>
+  </html:div>
+  <html:script src="chrome://zotero10-scholar/content/results.js"/>
+</window>

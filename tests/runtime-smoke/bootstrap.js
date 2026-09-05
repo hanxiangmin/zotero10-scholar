@@ -317,7 +317,7 @@ async function runSmoke(rootURI) {
     await item.saveTx({skipSelect:true}); return item;
   };
   const alerts = [], originalAlert = plugin.alert;
-  plugin.alert = message => alerts.push(message); // informational result dialogs only
+  plugin.alert = message => alerts.push(message); // suppress only blocking alerts; result windows stay real
   await step("load-catalog-and-create-test-items", async () => {
     if (!smokeConfig.withData) {
       const empty = await create({title:"No-data protection",callNumber:"C",extra});
@@ -348,7 +348,7 @@ async function runSmoke(rootURI) {
     invokeMenu(win,"zsr10-metadata");
     await waitFor("direct metadata update",()=>!plugin.busy && fixtures.journal.getField("DOI")==="10.12345/cleanup-test",12000);
     const value=await snapshot(fixtures.journal);
-    same(value.title,"A fictional study of BRCA1 and p53","Conservative cleanup");
+    same(value.title,"A fictional study of BRCA1 and p53","Scientific case protection");
     same(value.volume,"2","Volume cleanup"); same(value.pages,"S10–S19","Page cleanup");
     same(value.callNumber,"Old manual value","Metadata does not also update rank"); same(value.extra,extra,"No Extra writes");
     return {menuIDs:ids,viaMenuDOM:true};
@@ -380,7 +380,23 @@ async function runSmoke(rootURI) {
     const doc=preferences.document;
     for(const id of ["zsr10-metadata","zsr10-doi","zsr10-ranks"]) check(doc.getElementById(id),"Missing management action "+id);
     check(!doc.getElementById("zsr10-restore-manual") && !doc.getElementById("zsr10-manual"),"Retired controls removed");
-    same(doc.querySelectorAll("#zsr10-metadata-rules input").length,7,"Individual rule switches");
+    same(doc.querySelectorAll("#zsr10-metadata-rules input").length,8,"Individual rule switches");
+    same(doc.getElementById("zsr10-title-case").value,"sentence","Sentence case default");
+    const titleControl=doc.getElementById("zsr10-title-case");
+    titleControl.value="preserve"; titleControl.dispatchEvent(new preferences.Event("change"));
+    same(plugin.pref("metadata.titleCase"),"preserve","Title preference saves");
+    titleControl.value="sentence"; titleControl.dispatchEvent(new preferences.Event("change"));
+    check(doc.getElementById("zsr10-protected-terms"),"Custom protected spelling control");
+    same(doc.getElementById("zsr10-doi").textContent,"联网更新元数据","Online command label");
+    preferences.resizeTo(1250,1600);await Zotero.Promise.delay(500);
+    const first=doc.getElementById("zsr10-doi").closest("groupbox").getBoundingClientRect();
+    const last=doc.getElementById("zsr10-metadata-rules").closest("groupbox").getBoundingClientRect();
+    const rect=new preferences.DOMRect(first.x-10,first.y-10,first.width+20,last.bottom-first.y+20);
+    const canvas=doc.createElementNS("http://www.w3.org/1999/xhtml","canvas");canvas.width=Math.ceil(rect.width*1.5);canvas.height=Math.ceil(rect.height*1.5);
+    const bitmap=await preferences.browsingContext.currentWindowGlobal.drawSnapshot(rect,1.5,"rgb(255,255,255)",false);
+    canvas.getContext("2d").drawImage(bitmap,0,0);bitmap.close();await guard();
+    const directory=PathUtils.join(smokeConfig.sessionDir,"screenshots");await IOUtils.makeDirectory(directory,{ignoreExisting:true});
+    await IOUtils.write(PathUtils.join(directory,"settings-panel.png"),Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]),c=>c.charCodeAt(0)));
     doc.getElementById("zsr10-auto-new").click(); doc.getElementById("zsr10-metadata-auto").click();
     same(plugin.pref("autoNew"),true,"Auto ranks saved"); same(plugin.pref("metadata.auto"),true,"Auto cleanup saved");
     check(doc.getElementById("zsr10-auto-status").textContent.includes("自动整理 → 自动更新分区指标"),"Combined status");
@@ -398,6 +414,19 @@ async function runSmoke(rootURI) {
       const record=await create({title:"A fictional automatic study of cells",DOI:"doi:10.12345/automatic-test",publicationTitle:fixtures.journal.getField("publicationTitle"),callNumber:"Auto must keep",extra});
       await waitFor("automatic cleanup",()=>!plugin.busy && record.getField("DOI")==="10.12345/automatic-test",12000); await plugin.pendingAuto;
       same(record.getField("callNumber"),"Auto must keep","Keep existing rank in automatic mode"); same(record.getField("extra"),extra,"Auto does not write Extra"); same(lookups,0,"No DOI network call");
+      if(smokeConfig.withData) {
+        const meeting=new Zotero.Item("conferencePaper");meeting.libraryID=Zotero.Libraries.userLibraryID;
+        meeting.setField("title","Fictional Meeting Test: a Study of fMRI");
+        meeting.setField("conferenceName","MICCAI");meeting.setField("proceedingsTitle","Medical Image Computing and Computer Assisted Intervention – MICCAI-2005");
+        meeting.setField("date","2025");meeting.setField("callNumber","Auto must keep");await meeting.saveTx({skipSelect:true});
+        const standard="International Conference on Medical Image Computing and Computer-Assisted Intervention";
+        await waitFor("automatic conference standardization",()=>!plugin.busy && meeting.getField("conferenceName")===standard,12000);await plugin.pendingAuto;
+        same(meeting.getField("proceedingsTitle"),standard,"Standard full proceedings title without year suffix");
+        same(meeting.getField("date"),"2025","Name cleanup never infers date from 2005 suffix");
+        same(meeting.getField("title"),"Fictional meeting test: A study of fMRI","Automatic subtitle capitalization");
+        same(meeting.getField("callNumber"),"Auto must keep","Name cleanup respects rank automatic boundary");
+        same(lookups,0,"Conference cleanup remains offline");
+      }
       return {networkCalls:lookups,extraUntouched:true};
     } finally {plugin.setPref("metadata.auto",false);plugin.setPref("autoNew",false);plugin.lookupDOI=lookup;}
   });
@@ -421,6 +450,72 @@ async function runSmoke(rootURI) {
     } finally {plugin.lookupDOI=lookup;}
   });
 
+  await step("native-before-after-results-window-and-safe-rendering", async () => {
+    await guard();
+    const record=new Zotero.Item("conferencePaper");record.libraryID=Zotero.Libraries.userLibraryID;
+    const fields={title:"Fictional Hypergraph Study: a Model for fMRI",DOI:"10.12345/result-dialog",date:"2026",
+      conferenceName:"MICCAI",proceedingsTitle:"Medical Image Computing and Computer Assisted Intervention – MICCAI-2025",callNumber:"B",extra};
+    for(const [field,value] of Object.entries(fields))record.setField(field,value);
+    await record.saveTx({skipSelect:true});
+    const lookup=plugin.lookupDOI, previous=new Set(plugin.resultWindows);
+    plugin.lookupDOI=async()=>[{...fields,itemType:"conferencePaper",title:fields.title,
+      scholarCrossref:{DOI:fields.DOI,title:[fields.title],type:"proceedings-article",event:{start:{"date-parts":[[2025,9,23]]}}}}];
+    try { same((await plugin.updateByDOI([record],{win})).written,1,"Dialog fixture saved"); } finally {plugin.lookupDOI=lookup;}
+    same(record.getField("date"),"2025","Dialog fixture date saved");
+    let dialog;
+    try { dialog=await waitFor("native result table",()=>[...plugin.resultWindows].find(candidate=>!previous.has(candidate)&&candidate.document?.querySelector("tbody tr")),12000); }
+    catch(error) { throw new Error(error.message+"; windows="+JSON.stringify([...plugin.resultWindows].map(candidate=>({previous:previous.has(candidate),closed:candidate.closed,url:candidate.location?.href,text:candidate.document?.documentElement?.textContent?.slice(-8000)})))); }
+    smokePreviews.add(dialog);
+    const doc=dialog.document, rows=Array.from(doc.querySelectorAll("tbody tr"));
+    const values=field=>Array.from(doc.querySelectorAll(`tr[data-field="${field}"] td`),cell=>cell.textContent);
+    same(values("date"),["日期","2026","2025"],"Saved date before/after");
+    same(values("title"),["标题",fields.title,"Fictional hypergraph study: A model for fMRI"],"Title before/after");
+    check(rows.every(row=>!["extra","callNumber"].includes(row.dataset.field)),"Unchanged and protected fields omitted");
+    same(Array.from(doc.querySelectorAll("thead th"),cell=>cell.textContent),["字段","修改前","修改后"],"Three comparison columns");
+    dialog.resizeTo(1020,760); await Zotero.Promise.delay(500);
+    const directory=PathUtils.join(smokeConfig.sessionDir,"screenshots");
+    await IOUtils.makeDirectory(directory,{ignoreExisting:true});
+    const rect=new dialog.DOMRect(0,0,dialog.innerWidth,dialog.innerHeight);
+    const canvas=doc.createElementNS("http://www.w3.org/1999/xhtml","canvas");canvas.width=Math.ceil(rect.width*1.5);canvas.height=Math.ceil(rect.height*1.5);
+    const bitmap=await dialog.browsingContext.currentWindowGlobal.drawSnapshot(rect,1.5,"rgb(255,255,255)",false);
+    canvas.getContext("2d").drawImage(bitmap,0,0);bitmap.close();await guard();
+    const screenshot=PathUtils.join(directory,"update-results.png");
+    await IOUtils.write(screenshot,Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]),c=>c.charCodeAt(0)));
+    doc.getElementById("zsr10-results-close").click();await waitFor("result close button",()=>dialog.closed,5000);
+
+    // Render malicious-looking metadata literally, including long abstracts.
+    const markup='<img src="x" onerror="window.__scholarInjected=true">';
+    plugin.showResult({written:1},win,[{title:markup,changes:[{field:"abstractNote",label:"摘要",before:"",after:markup.repeat(200)}]}],{operation:"渲染安全测试"});
+    const safe=await waitFor("safe metadata rendering",()=>[...plugin.resultWindows].find(candidate=>!previous.has(candidate)&&candidate.document?.querySelector('tr[data-field="abstractNote"]')),12000);
+    smokePreviews.add(safe);
+    same(safe.document.querySelector("tbody tr td.after").textContent,markup.repeat(200),"No truncation or HTML interpretation");
+    same(safe.document.querySelectorAll("img, iframe").length,0,"No nodes created from metadata");
+    check(!safe.__scholarInjected,"No script from metadata executed");
+    check(safe.document.getElementById("zsr10-results-list").scrollHeight>safe.document.getElementById("zsr10-results-list").clientHeight,"Long values remain scrollable");
+    safe.dispatchEvent(new safe.KeyboardEvent("keydown",{key:"Escape"}));await waitFor("escape closes result",()=>safe.closed,5000);
+    return {realWindow:true,columns:3,changedFields:rows.map(row=>row.dataset.field),safePlainText:true,screenshot};
+  });
+
+  await step("native-automatic-result-window-appends-batches", async () => {
+    const first=await create({title:"Fictional automatic report one",publicationTitle:fixtures.journal.getField("publicationTitle"),extra});
+    const second=await create({title:"Fictional automatic report two",publicationTitle:fixtures.journal.getField("publicationTitle"),extra});
+    if(plugin.autoResult?.win&&!plugin.autoResult.win.closed)plugin.autoResult.win.close();
+    plugin.setPref("autoNew",true);
+    try {
+      await plugin.apply([first],{automatic:true,silent:true,win});
+      const dialog=plugin.autoResult.win;smokePreviews.add(dialog);
+      await waitFor("automatic result first batch",()=>dialog.document?.querySelectorAll(".batch").length===1,12000);
+      await plugin.apply([second],{automatic:true,silent:true,win});
+      check(plugin.autoResult.win===dialog,"Automatic batches share one native window");
+      await waitFor("automatic result appended batch",()=>dialog.document.querySelectorAll(".batch").length===2,12000);
+      same(dialog.document.querySelectorAll('tr[data-field="callNumber"]').length,2,"Both committed ranks shown");
+      await plugin.apply([second],{automatic:true,silent:true,win});
+      await waitFor("automatic empty report",()=>dialog.document.querySelectorAll(".batch").length===3,12000);
+      check(dialog.document.querySelector(".batch:last-child").textContent.includes("本次没有修改任何字段"),"No change is explicit");
+      dialog.close();return {realWindow:true,batches:3,windows:1};
+    } finally {plugin.setPref("autoNew",false);}
+  });
+
   await step("live-native-DOI-updates-existing-item-without-creating-duplicates", async () => {
     const record=await create({title:"Replace this title from DOI",DOI:"10.1038/nature14539",callNumber:"Keep metrics",extra});
     const before=(await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length;
@@ -432,6 +527,94 @@ async function runSmoke(rootURI) {
     same(result.callNumber,"Keep metrics","Live DOI update preserves metrics");same(result.extra,extra,"Live DOI update preserves Extra");
     same((await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length,before,"Native search saves no items");
     return {liveNetwork:true,updatedInPlace:true,DOI:result.DOI,title:result.title,creatorCount:result.creators.length};
+  });
+
+  await step("live-empty-DOI-title-search-finds-the-original-publication", async () => {
+    const record=await create({title:"Deep learning",publicationTitle:"Nature",date:"2015",DOI:"",callNumber:"Keep metrics",extra});
+    record.setCreators([{creatorType:"author",firstName:"Yann",lastName:"LeCun"}]);await record.saveTx({skipSelect:true});
+    const before=await snapshot(record),size=(await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length;
+    const previous=new Set(plugin.resultWindows);Zotero.UndoHistory.clear();
+    const counts=await plugin.updateByDOI([record],{win});
+    same(counts.written,1,"Live title fallback writes one existing item");
+    same(record.getField("DOI").toLowerCase(),"10.1038/nature14539","Recovered known DOI");
+    const dialog=await waitFor("title search DOI diff",()=>[...plugin.resultWindows].find(candidate=>!previous.has(candidate)&&candidate.document?.querySelector('tr[data-field="DOI"]')),12000);
+    smokePreviews.add(dialog);
+    same(Array.from(dialog.document.querySelectorAll('tr[data-field="DOI"] td'),cell=>cell.textContent),["DOI","（空）","10.1038/nature14539"],"Original empty DOI reported honestly");
+    same(record.getField("callNumber"),"Keep metrics","Search leaves ranks untouched");same(record.getField("extra"),extra,"Search leaves Extra untouched");
+    same((await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length,size,"Title search creates no duplicates");
+    same(await Zotero.UndoHistory.undo(),true,"Undo discovered DOI and metadata");same(await snapshot(record),before,"Original empty DOI restored by native undo");
+    same(await Zotero.UndoHistory.redo(),true,"Redo discovered DOI");same(record.getField("DOI").toLowerCase(),"10.1038/nature14539","Redo verified DOI");
+    dialog.close();return {liveNetwork:true,query:"Deep learning / Yann LeCun / Nature / 2015",DOI:record.getField("DOI"),updatedInPlace:true,undoRedo:true};
+  });
+
+  await step("live-MICCAI-conference-year-and-protected-title-case", async () => {
+    await guard();
+    const record=new Zotero.Item("conferencePaper");record.libraryID=Zotero.Libraries.userLibraryID;
+    record.setField("title","Old title");record.setField("date","2026");
+    record.setField("DOI","10.1007/978-3-032-05162-2_49");
+    record.setField("callNumber","B");record.setField("extra",extra);await record.saveTx({skipSelect:true});
+    const before=(await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length;
+    const counts=await plugin.updateByDOI([record],{silent:true});
+    same(counts.written,1,"Live conference update");
+    same(record.getField("date"),"2025","Explicit conference year overrides print 2026");
+    const standard="International Conference on Medical Image Computing and Computer-Assisted Intervention";
+    same(record.getField("conferenceName"),standard,"DOI uses standard conference name");
+    same(record.getField("proceedingsTitle"),standard,"DOI does not restore annual book suffix");
+    same(record.getField("title"),"Multimodal hypergraph guide learning for non-invasive ccRCC survival prediction","Sentence case and ccRCC protection");
+    same(record.itemType,"conferencePaper","Do not convert library item type");
+    same(record.getField("extra"),extra,"Conference Extra untouched");
+    same(record.getField("callNumber"),"B","Conference metrics untouched by DOI");
+    same((await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length,before,"No duplicate conference record");
+    return {liveNetwork:true,DOI:record.getField("DOI"),date:record.getField("date"),title:record.getField("title")};
+  });
+
+  await step("real-venue-regressions-from-user-report", async () => {
+    if (!smokeConfig.withData) return {skipped:"No real catalog"};
+    same(plugin.catalog.lookup({itemType:"conferencePaper",proceedingsTitle:"International Conference on Acoustics, Speech, and Signal Processing"}).text,"B","ICASSP missing IEEE prefix");
+    const ccc=plugin.catalog.lookup({itemType:"conferencePaper",proceedingsTitle:"2018 37th Chinese Control Conference (CCC)"});
+    same(ccc.hasData,false,"Chinese Control Conference is not Computational Complexity");
+    same(plugin.catalog.lookup({itemType:"journalArticle",publicationTitle:"Proceedings of the AAAI Conference on Artificial Intelligence"}).text,"A","AAAI journal-article import");
+    return {ICASSP:"B",CCC:"rejected",AAAI:"A"};
+  });
+
+  await step("four-report-conferences-recover-ranks-without-clearing-conflicts", async () => {
+    await guard();
+    if (!smokeConfig.withData) return {skipped:"No real catalog"};
+    const definitions = [
+      ["Dual channel hypergraph collaborative filtering", "", "Proceedings of the 26th ACM SIGKDD International Conference on Knowledge Discovery & Data Mining", "2020-08-23", "A"],
+      ["Dynamic hypergraph neural networks", "IJCAI", "Proceedings of the Twenty-Eighth International Joint Conference on Artificial Intelligence", "2019-08", "B"],
+      ["Iterative metric learning for imbalance data classification", "Twenty-Seventh International Joint Conference on Artificial Intelligence {IJCAI-18}", "Proceedings of the Twenty-Seventh International Joint Conference on Artificial Intelligence", "2018-07", "B"],
+      ["Negative prompt driven complementary parallel representation for open-world 3D object retrieval", "Thirty-Third International Joint Conference on Artificial Intelligence {IJCAI-24}", "Proceedings of the Thirty-ThirdInternational Joint Conference on Artificial Intelligence", "2024-08", "B"]
+    ];
+    const items=[];
+    for (const [title,conferenceName,proceedingsTitle,date] of definitions) {
+      const item=new Zotero.Item("conferencePaper");item.libraryID=Zotero.Libraries.userLibraryID;
+      for (const [key,value] of Object.entries({title,conferenceName,proceedingsTitle,date,extra})) item.setField(key,value);
+      await item.saveTx({skipSelect:true});items.push(item);
+    }
+    const previous=new Set(plugin.resultWindows);
+    same((await plugin.apply(items,{win})).written,4,"Restore all four empty call numbers");
+    const expected=definitions.map(row=>row[4]);
+    same(items.map(item=>item.getField("callNumber")),expected,"Ranks from bundled CCF 2026");
+    const dialog=await waitFor("four restored rank rows",()=>[...plugin.resultWindows].find(candidate=>!previous.has(candidate)&&candidate.document?.querySelectorAll('tr[data-field="callNumber"]').length===4),12000);
+    smokePreviews.add(dialog);
+    same([...dialog.document.querySelectorAll('tr[data-field="callNumber"]')].map(row=>[...row.querySelectorAll('td')].map(cell=>cell.textContent)),expected.map(rank=>["索书号（分区指标）","（空）",rank]),"Before/after reports actual restored values");
+    same((await plugin.apply(items,{silent:true})).unchanged,4,"Repeating update cannot clear ranks");
+    same((await plugin.apply(items,{metadata:true,silent:true})).written,4,"Standardize four conference names");
+    for (let i=0;i<items.length;i++) {
+      const standard=i===0 ? "ACM SIGKDD Conference on Knowledge Discovery and Data Mining" : "International Joint Conference on Artificial Intelligence";
+      same(items[i].getField("conferenceName"),standard,"Conference name standardized");
+      same(items[i].getField("proceedingsTitle"),standard,"Proceedings title standardized");
+      same(items[i].getField("date"),definitions[i][3],"Offline name cleanup preserves date");
+      same(items[i].getField("callNumber"),expected[i],"Metadata cleanup preserves rank");
+      same(items[i].getField("extra"),extra,"Extra unchanged");
+    }
+    const conflict=new Zotero.Item("conferencePaper");conflict.libraryID=Zotero.Libraries.userLibraryID;
+    for(const [key,value] of Object.entries({title:"Conflicting conference regression",conferenceName:"CCC",proceedingsTitle:"2018 37th Chinese Control Conference (CCC)",callNumber:"B",extra})) conflict.setField(key,value);
+    await conflict.saveTx({skipSelect:true});
+    same((await plugin.apply([conflict],{silent:true}))["no-data"],1,"Conflict remains unmatched");
+    same(conflict.getField("callNumber"),"B","Uncertainty never deletes the existing bare grade");
+    dialog.close();return {realReportVenueStrings:true,ranks:expected,conflictPreserved:true,nativeDiff:true};
   });
 
   await step("disable-and-enable-cleanly-registers-three-commands", async () => {
