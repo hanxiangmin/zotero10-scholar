@@ -11,10 +11,33 @@ const Core = require("../src/core.js");
 const Metadata = require("../src/metadata.js");
 const Reports = require("../src/reports.js");
 const Search = require("../src/search.js");
+const Attachments = require("../src/attachments.js");
 
 const PLUGIN_CODE = fs.readFileSync(path.join(__dirname, "../src/plugin.js"), "utf8");
 const PAMI = "IEEE TRANSACTIONS ON PATTERN ANALYSIS AND MACHINE INTELLIGENCE";
 const tick = () => new Promise(resolve => setImmediate(resolve));
+// Synthetic bytes exercise response checks only; the native smoke also downloads a real PDF.
+const PDF_FIXTURE = new TextEncoder().encode('%PDF-1.7\nSynthetic unit-test content\n%%EOF\n');
+function downloadHarness(routes = new Map()) {
+  const calls = [], pauses = []; let clock = 10000, cancelled = false;
+  const response = (body, status = 200, headers = {}) => ({ status, response: body,
+    getResponseHeader: key => headers[key] || null });
+  const downloader = new Attachments.Downloader({
+    now: () => clock, delay: async ms => { pauses.push(ms); clock += ms; }, cancelled: () => cancelled,
+    decode: bytes => new TextDecoder().decode(bytes),
+    parseHTML: html => ({ querySelectorAll: selector => selector.startsWith('meta')
+      ? [...html.matchAll(/<meta name="([^"]+)" content="([^"]+)"\s*\/?>/g)]
+        .map(match => ({ getAttribute: key => ({name:match[1],content:match[2]})[key] })) : [] }),
+    request: async (url, options) => {
+      calls.push({ url, options, time: clock });
+      assert.equal(options.followRedirects, false); assert.equal(options.noRetryOnThrottle, true);
+      assert.equal(options.errorDelayMax, 0); assert.equal(options.timeout, 30000);
+      if (!routes.has(url)) throw new Error('No test route: '+url);
+      const value = routes.get(url); return typeof value === 'function' ? value() : value;
+    }
+  });
+  return { downloader, calls, pauses, response, cancel: () => {cancelled=true;} };
+}
 function deferred() {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -194,7 +217,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     }
   };
   const scope = {
-    ScholarCore: Core, ScholarMetadata: Metadata, ScholarSearch: Search, ScholarReports: Reports, Zotero, IOUtils, clearTimeout,
+    ScholarCore: Core, ScholarMetadata: Metadata, ScholarSearch: Search, ScholarReports: Reports, ScholarAttachments: Attachments, Zotero, IOUtils, clearTimeout, TextDecoder,
     setTimeout: (callback, ms) => setTimeout(callback, fastTimeout && ms === 45000 ? 1 : ms),
     PathUtils: { join: (...parts) => parts.join("/") },
     ChromeUtils: { importESModule: () => ({ FilePicker }) },
@@ -209,7 +232,8 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     const fields = { creators: [], title: `Paper ${id}`, publicationTitle: PAMI, ISSN: "0162-8828", callNumber: "", extra: "User note", ...values };
     const object = {
       id, key: `ITEM${id}`, libraryID: 1, itemType: "journalArticle", itemTypeID: 1,
-      library: { libraryType: "user" }, deleted: false, isFeedItem: false,
+      library: { libraryType: "user", filesEditable: true }, deleted: false, isFeedItem: false,
+      numFileAttachmentsWithContentType: () => 0,
       fields, saveEntered: deferred(), saveGate: null, saveError: null,
       isRegularItem: () => true, isEditable: () => true,
       getCreatorsJSON: () => structuredClone(fields.creators),
@@ -233,7 +257,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     state.persisted.set(id, { ...fields });
     return object;
   }
-  return { plugin, state, item };
+  return { plugin, state, item, Zotero };
 }
 
 test("imported abbreviation tables persist across reload and malformed replacements are rejected", async () => {
@@ -443,10 +467,10 @@ test("an import dialog completed after stop cannot write a local override", { ti
   assert.equal(plugin.catalog.indexes.jcr.dataset.metricYear, 2025);
 });
 
-test("three menu actions directly clean metadata, query DOI, or update ranks", async () => {
+test("four menu actions keep metadata, DOI, ranks and manual PDF downloads separate", async () => {
   const {plugin,state,item}=await harness();
   const menus=state.menuConfigs.get("scholar-items").menus[0].menus;
-  assert.deepEqual(Array.from(menus,m=>m.l10nID),["zsr10-metadata","zsr10-doi","zsr10-update"]);
+  assert.deepEqual(Array.from(menus,m=>m.l10nID),["zsr10-metadata","zsr10-doi","zsr10-update","zsr10-download"]);
   const record=item(100,{DOI:"doi:10.1234/x",callNumber:"Old",extra:"Existing note"});
   menus[0].onCommand(null,{items:[record],menuElem:{ownerGlobal:{}}}); await tick();
   if (plugin.currentOperation) await plugin.currentOperation;
@@ -455,6 +479,137 @@ test("three menu actions directly clean metadata, query DOI, or update ranks", a
   if (plugin.currentOperation) await plugin.currentOperation;
   assert.equal(record.fields.callNumber,"A|20.4|Q1|1区TOP"); assert.equal(record.fields.extra,"Existing note");
   assert.equal(state.doiLookups.length,0);
+});
+
+test("PDF sources reject Google domains, credentials and non-web/local URLs before any request", () => {
+  for (const url of ['https://scholar.google.com/scholar?q=x','https://scholar.google.com.hk/x',
+    'https://scholar.google.co.uk./x','https://www.google.com/url?q=x','https://x.googleusercontent.com/a',
+    'file:///C:/secret.pdf','javascript:alert(1)','https://user:password@publisher.org/p.pdf',
+    'http://127.0.0.1/file','http://[::1]/a','https://localhost/a','http://192.168.1.1/a'])
+    assert.throws(()=>Attachments.checkedURL(url),Attachments.DownloadError,url);
+  assert.equal(Attachments.checkedURL('../paper.pdf','https://publisher.org/article/1'),'https://publisher.org/paper.pdf');
+  assert.equal(Attachments.checkedURL('https://publisher.org/a.pdf#page=2'),'https://publisher.org/a.pdf');
+});
+
+test("PDF lookup follows checked DOI redirects and citation metadata, with spaced requests", async () => {
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://doi.org/10.1234/test',h.response(null,302,{'Location':'https://publisher.org/article'}));
+  const html='<meta name="citation_pdf_url" content="/paper.pdf">';
+  routes.set('https://publisher.org/article',h.response(new TextEncoder().encode(html).buffer,200,{'Content-Type':'text/html'}));
+  routes.set('https://publisher.org/paper.pdf',h.response(PDF_FIXTURE.buffer));
+  const found=await h.downloader.find({DOI:'10.1234/test'});
+  assert.equal(found.url,'https://publisher.org/paper.pdf'); assert.deepEqual(found.bytes,PDF_FIXTURE);
+  assert.deepEqual(h.calls.map(c=>c.time),[10000,11500,13000]);
+  assert.equal(h.calls.length,3);
+});
+
+test("Google redirect targets and publisher PDF links never become requests", async () => {
+  for (const status of [301,302,303,307,308]) {
+    const routes=new Map(),h=downloadHarness(routes);
+    routes.set('https://publisher.org/article',h.response(null,status,{'Location':'https://scholar.google.cn/a.pdf'}));
+    await assert.rejects(h.downloader.find({url:'https://publisher.org/article'}),{reason:'pdf-blocked-source'});
+    assert.equal(h.calls.length,1);
+  }
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://publisher.org/article',h.response(new TextEncoder().encode('<meta name="citation_pdf_url" content="https://scholar.google.com/a.pdf">').buffer,200,{'Content-Type':'text/html'}));
+  await assert.rejects(h.downloader.find({url:'https://publisher.org/article'}),{reason:'pdf-not-found'});
+  assert.equal(h.calls.length,1);
+});
+
+test("OA fallback sends only the DOI and rejects unsafe returned addresses", async () => {
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://doi.org/10.1234/test',h.response(null,404));
+  routes.set('https://services.zotero.org/oa/search',h.response([
+    {url:'https://scholar.google.com/a.pdf'}, {url:'https://repository.org/paper.pdf'}]));
+  routes.set('https://repository.org/paper.pdf',h.response(PDF_FIXTURE.buffer));
+  assert.equal((await h.downloader.find({DOI:'10.1234/test'})).url,'https://repository.org/paper.pdf');
+  const query=h.calls.find(call=>call.options.method==='POST');
+  assert.deepEqual(JSON.parse(query.options.body),{doi:'10.1234/test'});
+  assert.equal(h.calls.some(call=>call.url.includes('google')),false);
+});
+
+test("authentication, CAPTCHA and throttling stop without retries or alternative-source probing", async () => {
+  for (const status of [401,403,429,503]) {
+    const routes=new Map(),h=downloadHarness(routes);
+    routes.set('https://doi.org/10.1234/test',h.response(null,status));
+    await assert.rejects(h.downloader.find({DOI:'10.1234/test',url:'https://publisher.org/article'}),{reason:'pdf-access-limited',stopBatch:true});
+    assert.equal(h.calls.length,1);
+  }
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://publisher.org/article',h.response(new TextEncoder().encode('<title>Just a moment...</title>').buffer,200,{'Content-Type':'text/html'}));
+  await assert.rejects(h.downloader.find({url:'https://publisher.org/article'}),{reason:'pdf-access-limited',stopBatch:true});
+  assert.equal(h.calls.length,1);
+});
+
+test("PDF validation rejects login HTML and truncated files; cancellation prevents subsequent requests", async () => {
+  assert.equal(Attachments.pdfBytes(PDF_FIXTURE),true);
+  assert.equal(Attachments.pdfBytes(new TextEncoder().encode('<html>not a PDF</html>')),false);
+  assert.equal(Attachments.pdfBytes(new TextEncoder().encode('%PDF-1.7 incomplete file')),false);
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://publisher.org/paper.pdf',()=>{h.cancel();return h.response(PDF_FIXTURE.buffer);});
+  await assert.rejects(h.downloader.find({url:'https://publisher.org/paper.pdf'}),{reason:'pdf-cancelled'});
+  assert.equal(h.calls.length,1);
+});
+
+test("manual downloads skip existing files, read-only libraries and missing sources without touching metadata", async () => {
+  const {plugin,state,item,Zotero}=await harness();
+  Zotero.Attachments={createURLAttachmentFromTemporaryStorageDirectory(){}};
+  const found=[],saved=[];
+  plugin.attachmentDownloader=()=>({find:async input=>{found.push(input);return{bytes:PDF_FIXTURE,url:'https://publisher.org/full.pdf'};}});
+  plugin.storePDF=async(record)=>{saved.push(record.id);return{filename:'paper.pdf'};};
+  const records=[item(901,{DOI:'10.1234/test'}),item(902),item(903,{DOI:'10.1234/existing'}),item(904,{DOI:'10.1234/readonly'}),item(905,{url:'https://scholar.google.com/x'})];
+  records[2].numFileAttachmentsWithContentType=()=>1; records[3].library.filesEditable=false;
+  const before=records.map(record=>JSON.stringify(record.fields));
+  const counts=await plugin.downloadAttachments([...records,records[0]]);
+  assert.equal(counts.downloaded,1);assert.equal(counts['pdf-existing'],1);assert.equal(counts['read-only'],1);
+  assert.equal(counts['pdf-no-source'],1);assert.equal(counts['pdf-blocked-source'],1);
+  assert.equal(found.length,1);assert.deepEqual(saved,[901]);
+  assert.deepEqual(records.map(record=>JSON.stringify(record.fields)),before);assert.equal(state.saveIDs.length,0);
+  const report=state.dialogs[0].data.batches[0];
+  assert.equal(report.download,true);assert.equal(report.items[0].changes[0].field,'pdf');
+  assert.equal(report.outcomes.length,4);assert.match(Reports.toText(report),/已有全文附件/);
+});
+
+test("manual download failures preserve successful files and stop the remaining batch on access limits", async () => {
+  const {plugin,state,item,Zotero}=await harness();Zotero.Attachments={createURLAttachmentFromTemporaryStorageDirectory(){}};
+  let requests=0;
+  plugin.attachmentDownloader=()=>({find:async()=>{if(++requests===2)throw new Attachments.DownloadError('pdf-access-limited',true);return{bytes:PDF_FIXTURE,url:'https://publisher.org/f.pdf'};}});
+  plugin.storePDF=async()=>({filename:'paper.pdf'});
+  const counts=await plugin.downloadAttachments([1,2,3].map(n=>item(910+n,{DOI:`10.1234/${n}`})));
+  assert.equal(counts.downloaded,1);assert.equal(counts['pdf-access-limited'],1);assert.equal(counts['pdf-not-attempted'],1);
+  assert.equal(requests,2);assert.equal(state.dialogs[0].data.batches[0].items.length,1);
+  assert.equal(plugin.busy,false);assert.equal(plugin.downloadTask,null);
+});
+
+test("new-item processing never invokes manual attachment lookup, even with both automatic switches on", async () => {
+  const {plugin,state,item}=await harness(); let called=0;
+  plugin.downloadAttachments=async()=>{called++;};plugin.setPref('metadata.auto',true);plugin.setPref('autoNew',true);
+  item(920,{DOI:'10.1234/automatic'});state.observer.notify('add','item',[920]);await plugin.pendingAuto;
+  assert.equal(called,0);await plugin.stop();
+});
+
+test("PDF save rechecks edits, newly added full text, permissions and cancellation before allocating storage", async () => {
+  const {plugin,item}=await harness();const record=item(930,{DOI:'10.1234/snapshot'});
+  const before=plugin.snapshot(record),result={bytes:PDF_FIXTURE,url:'https://publisher.org/paper.pdf'},task={cancelled:false};
+  record.fields.DOI='10.1234/edited';
+  await assert.rejects(plugin.storePDF(record,before,result,task),{reason:'manually-edited'});
+  record.fields.DOI=before.DOI;record.numFileAttachmentsWithContentType=()=>1;
+  await assert.rejects(plugin.storePDF(record,before,result,task),{reason:'pdf-existing'});
+  record.numFileAttachmentsWithContentType=()=>0;record.library.filesEditable=false;
+  await assert.rejects(plugin.storePDF(record,before,result,task),{reason:'read-only'});
+  record.library.filesEditable=true;task.cancelled=true;
+  await assert.rejects(plugin.storePDF(record,before,result,task),{reason:'pdf-cancelled'});
+});
+
+test("a login page returned for a PDF link stops before OA fallback; oversize files never save", async () => {
+  const routes=new Map(),h=downloadHarness(routes);
+  routes.set('https://publisher.org/article',h.response(new TextEncoder().encode('<meta name="citation_pdf_url" content="/full.pdf">').buffer,200,{'Content-Type':'text/html'}));
+  routes.set('https://publisher.org/full.pdf',h.response(new TextEncoder().encode('<title>Sign in</title><input type="password">').buffer,200,{'Content-Type':'text/html'}));
+  await assert.rejects(h.downloader.find({url:'https://publisher.org/article'}),{reason:'pdf-access-limited',stopBatch:true});
+  assert.equal(h.calls.length,2);
+  const large=downloadHarness(new Map([['https://publisher.org/large.pdf',h.response(new ArrayBuffer(Attachments.MAX_BYTES+1))]]));
+  await assert.rejects(large.downloader.find({url:'https://publisher.org/large.pdf'}),{reason:'pdf-too-large'});
+  assert.equal(Attachments.pdfBytes(new TextEncoder().encode('<html>%PDF-1.7\nSome discussion\n%%EOF</html>')),false);
 });
 
 test("manual rank update overwrites old locks without changing historical Extra records", async () => {

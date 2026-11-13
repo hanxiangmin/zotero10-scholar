@@ -4,7 +4,7 @@
     title: "标题", DOI: "DOI", date: "日期", creators: "作者及贡献者", publicationTitle: "期刊名称",
     proceedingsTitle: "会议论文集标题", conferenceName: "会议名称", journalAbbreviation: "期刊缩写",
     pages: "页码", volume: "卷次", issue: "期号", language: "语言", ISSN: "ISSN", url: "网址",
-    abstractNote: "摘要", publisher: "出版者", place: "出版地", callNumber: "索书号（分区指标）"
+    abstractNote: "摘要", publisher: "出版者", place: "出版地", callNumber: "索书号（分区指标）", pdf: "PDF 全文附件"
   };
   const ROLES = { author: "作者", editor: "编辑", contributor: "贡献者", translator: "译者" };
   function valueText(field, value) {
@@ -24,12 +24,16 @@
     return changes.length ? { id: before.id, key: before.key, libraryID: before.libraryID,
       title: after.title || before.title || "无标题", changes } : null;
   }
-  function create(operation, counts, items, reasons) {
-    const summary = [`已更新 ${counts.written || 0} 条，修改 ${items.reduce((n, item) => n + item.changes.length, 0)} 个字段。`];
+  function create(operation, counts, items, reasons, outcomes = []) {
+    const download = operation === "下载全文 PDF";
+    const summary = [download ? `已新增 ${counts.downloaded || 0} 份 PDF，原文献字段未修改。`
+      : `已更新 ${counts.written || 0} 条，修改 ${items.reduce((n, item) => n + item.changes.length, 0)} 个字段。`];
     for (const [key, count] of Object.entries(counts)) {
-      if (key !== "written" && count) summary.push(`${reasons[key] || key}：${count}`);
+      if (!["written", "downloaded"].includes(key) && count) summary.push(`${reasons[key] || key}：${count}`);
     }
-    return { operation, counts: { ...counts }, summary, items, time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
+    return { operation, counts: { ...counts }, summary, items, download,
+      outcomes: outcomes.filter(row => row.reason !== "downloaded").map(row => ({ ...row, message: reasons[row.reason] || row.reason })),
+      time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
   }
   function toText(report) {
     const lines = [report.operation, ...report.summary];
@@ -37,7 +41,8 @@
       lines.push("", item.title);
       for (const change of item.changes) lines.push(`${change.label}\n修改前：${change.before || "（空）"}\n修改后：${change.after || "（空）"}`);
     }
-    if (!report.items.length) lines.push("本次没有修改任何字段。");
+    for (const row of report.outcomes || []) lines.push("", row.title, row.message);
+    if (!report.items.length) lines.push(report.download ? "本次没有新增全文附件。" : "本次没有修改任何字段。");
     return lines.join("\n");
   }
   const api = { changedItem, create, toText };

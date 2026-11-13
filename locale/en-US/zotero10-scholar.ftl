@@ -6,5 +6,7 @@ zsr10-doi =
     .label = Update Metadata Online
 zsr10-update =
     .label = Update Rankings
+zsr10-download =
+    .label = Download Full-Text PDFs
 zsr10-settings =
     .label = Scholar Rank Settings

@@ -12,7 +12,7 @@
 python scripts/export-source.py
 ```
 
-默认输出不含指标整表的 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.1.2-source.zip`。
+默认输出不含指标整表的 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.2.0-source.zip`。
 目录已有内容时不会覆盖；重新导出请指定一个新目录，例如：
 
 ```sh
@@ -36,12 +36,12 @@ python scripts/build.py
 python scripts/prepare-smoke.py --auto-close
 ```
 
-唯一产物为 `dist/zotero10-scholar-3.1.2.xpi`，内置 CCF/JCR/CAS 表；缺少任一表会报错。没有额外构建开关或第二种安装包。
+唯一产物为 `dist/zotero10-scholar-3.2.0.xpi`，内置 CCF/JCR/CAS 表；缺少任一表会报错。没有额外构建开关或第二种安装包。
 隔离测试准备工具不会自动启动 Zotero，按[测试说明](TESTING.md)检查路径后启动，并核对实际运行报告。
 
 **本地生成含表 XPI 不等于取得了数据公开再分发权。** 本项目 MIT 许可只覆盖软件，完整指标表的公开发布须另行确认权利人的授权。
 确认授权后，在对应源码提交上创建版本标签，将唯一 XPI、SHA-256 和可选源码 ZIP 上传到同一个 Release。
-下载附件后核对 SHA-256、版本、三份数据和许可证，并说明三个操作、自动模式和 Linter 共存设置。
+下载附件后核对 SHA-256、版本、三份数据和许可证，并说明四个手动操作、自动模式和 Linter 共存设置；全文下载始终手动执行。
 GitHub Actions 只运行规则测试、合成数据打包验证和源码导出，不读取私人数据或自动发布安装包；不得将测试数据包作为正式安装包。
 每次推送后请查看 Actions 结果，确认 Windows 与 Linux 检查均通过。
 

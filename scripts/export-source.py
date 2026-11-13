@@ -42,6 +42,7 @@ FILES = (
     "src/metadata.js",
     "src/search.js",
     "src/reports.js",
+    "src/attachments.js",
     "src/plugin.js",
     "data/README.md",
     "docs/INSTALL.md",

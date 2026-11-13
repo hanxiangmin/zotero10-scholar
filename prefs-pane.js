@@ -36,7 +36,9 @@ var ScholarRankPrefs = {
       input.addEventListener("change", () => plugin.setPref("metadata." + key, input.checked));
       label.append(input, doc.createTextNode(" " + name)); rules.append(label);
     }
-    const actions = { metadata: "metadata", doi: "doi", ranks: "ranks" };
+    const actions = { metadata: "metadata", doi: "doi", ranks: "ranks", download: "download" };
+    const cancel = doc.getElementById("zsr10-cancel-download");
+    cancel.addEventListener("click", () => plugin.cancelDownload());
     for (const [id, action] of Object.entries(actions)) doc.getElementById("zsr10-" + id).addEventListener("click", () => plugin.safeRun(() => plugin.manageSelected(action, win), win));
     const refreshStatus = () => {
       if (!status.isConnected || !plugin.active) { win.clearInterval(timer); return; }
@@ -44,6 +46,8 @@ var ScholarRankPrefs = {
       doc.getElementById("zsr10-selection-summary").textContent = `已选中 ${items.length} 条期刊/会议文献，其中 ${items.filter(item => plugin.editable(item)).length} 条可编辑。`;
       status.textContent = plugin.status;
       for (const id of Object.keys(actions)) doc.getElementById("zsr10-" + id).disabled = plugin.busy;
+      cancel.hidden = !plugin.downloadTask;
+      cancel.disabled = Boolean(plugin.downloadTask?.cancelled);
     };
     const timer = win.setInterval(refreshStatus, 500);
     win.addEventListener("unload", () => win.clearInterval(timer), { once: true });

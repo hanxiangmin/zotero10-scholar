@@ -6,5 +6,7 @@ zsr10-doi =
     .label = 联网更新元数据
 zsr10-update =
     .label = 更新分区指标
+zsr10-download =
+    .label = 下载全文 PDF
 zsr10-settings =
     .label = Scholar Rank 设置

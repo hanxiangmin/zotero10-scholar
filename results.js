@@ -31,11 +31,16 @@
         }
         table.append(head, body); article.append(table); section.append(article);
       }
-      if (!report.items.length) section.append(element("p", "本次没有修改任何字段。", "empty"));
+      for (const row of report.outcomes || []) {
+        const article = element("article"); article.append(element("h3", row.title), element("p", row.message)); section.append(article);
+      }
+      if (!report.items.length) section.append(element("p", report.download ? "本次没有新增全文附件。" : "本次没有修改任何字段。", "empty"));
       list.append(section);
     }
     const written = data.batches.reduce((sum, report) => sum + (report.counts.written || 0), 0);
-    document.getElementById("zsr10-results-heading").textContent = `${data.automatic ? "自动更新结果" : "更新结果"} · 已更新 ${written} 条`;
+    document.getElementById("zsr10-results-heading").textContent = data.batches.every(report => report.download)
+      ? `下载结果 · 已新增 ${data.batches.reduce((sum, report) => sum + (report.counts.downloaded || 0), 0)} 份 PDF`
+      : `${data.automatic ? "自动更新结果" : "更新结果"} · 已更新 ${written} 条`;
   }
   window.addEventListener("scholar-rank-results", renderPending);
   window.addEventListener("DOMContentLoaded", () => {

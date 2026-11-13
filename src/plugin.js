@@ -4,6 +4,7 @@
   const Metadata = root.ScholarMetadata;
   const Search = root.ScholarSearch;
   const Reports = root.ScholarReports;
+  const Attachments = root.ScholarAttachments;
   const PREF = "extensions.zotero10scholar.";
   const LABEL = "Zotero 10 Scholar Rank";
   // Zotero awaits item observers in ascending priority order. Linter for
@@ -21,7 +22,14 @@
     "search-insufficient": "无 DOI 且标题、作者或出版信息不足，未查询",
     "search-no-match": "未找到信息一致的可信结果，保留原值",
     "search-ambiguous": "匹配到多个不同 DOI，保留原值",
-    "search-failed": "标题联网检索失败，保留原值"
+    "search-failed": "标题联网检索失败，保留原值",
+    "pdf-existing": "已有全文附件，保留原文件", "pdf-no-source": "缺少有效 DOI 和论文网址",
+    "pdf-blocked-source": "已跳过 Google 来源", "pdf-invalid-url": "下载网址无效或不允许",
+    "pdf-not-found": "未找到可直接下载的 PDF", "pdf-network-failed": "网络请求失败",
+    "pdf-access-limited": "需要登录、验证或网站限流，已停止本批下载",
+    "pdf-too-large": "文件超过 50 MB，需手动下载", "pdf-cancelled": "下载已停止",
+    "pdf-not-attempted": "本批已停止，未尝试下载", "pdf-save-failed": "附件保存失败",
+    "pdf-unavailable": "当前 Zotero 缺少所需附件接口"
   };
 
   const plugin = {
@@ -100,6 +108,7 @@
 
     async stop() {
       this.active = false;
+      this.cancelDownload();
       if (this.observer != null) Zotero.Notifier.unregisterObserver(this.observer);
       if (this.currentOperation) await this.currentOperation;
       await this.pendingAuto;
@@ -137,7 +146,8 @@
         menus: [{ menuType: "submenu", l10nID: "zsr10-menu", menus: [
           command("metadata", (items, win) => this.apply(items, { win, metadata: true, updateRanks: false })),
           command("doi", (items, win) => this.updateByDOI(items, { win })),
-          command("update", (items, win) => this.apply(items, { win }))
+          command("update", (items, win) => this.apply(items, { win })),
+          command("download", (items, win) => this.downloadAttachments(items, { win }))
         ] }]
       }));
       this.menuIDs.push(Zotero.MenuManager.registerMenu({
@@ -157,6 +167,7 @@
       if (action === "metadata") return this.apply(items, { win, metadata: true, updateRanks: false });
       if (action === "doi") return this.updateByDOI(items, { win });
       if (action === "ranks") return this.apply(items, { win });
+      if (action === "download") return this.downloadAttachments(items, { win });
       throw new Error("未知的管理操作。");
     },
 
@@ -197,8 +208,8 @@
         : { action: "skip", reason: "unchanged", fields, warnings };
     },
 
-    showResult(counts, win, changes = [], { operation = "更新分区指标", automatic = false, silent = false } = {}) {
-      const report = Reports.create(operation, counts, changes, REASONS);
+    showResult(counts, win, changes = [], { operation = "更新分区指标", automatic = false, silent = false, outcomes = [] } = {}) {
+      const report = Reports.create(operation, counts, changes, REASONS, outcomes);
       this.status = report.summary.join("；");
       if (!this.active || (silent && !automatic)) return;
       try {
@@ -236,6 +247,116 @@
       let done;
       this.currentOperation = new Promise(resolve => { done = resolve; });
       return () => { this.busy = false; this.currentOperation = null; done(); };
+    },
+
+    cancelDownload() {
+      if (!this.downloadTask) return;
+      this.downloadTask.cancelled = true;
+      this.downloadTask.xhr?.abort();
+    },
+
+    hasFullText(item) {
+      return ["application/pdf", "application/epub+zip"].some(type => item.numFileAttachmentsWithContentType(type) > 0);
+    },
+
+    async attachmentRequest(url, options, task) {
+      let tooLarge = false;
+      const { method = "GET", ...requestOptions } = options;
+      try {
+        return await Zotero.HTTP.request(method, url, { ...requestOptions, requestObserver: xhr => {
+          task.xhr = xhr;
+          xhr.addEventListener("progress", event => {
+            if (event.loaded > Attachments.MAX_BYTES || (event.lengthComputable && event.total > Attachments.MAX_BYTES)) {
+              tooLarge = true; xhr.abort();
+            }
+          });
+        } });
+      } catch (error) {
+        if (tooLarge) throw new Attachments.DownloadError("pdf-too-large");
+        throw error;
+      } finally { task.xhr = null; }
+    },
+
+    attachmentDownloader(task) {
+      return new Attachments.Downloader({
+        cancelled: () => !this.active || task.cancelled,
+        now: () => Date.now(), delay: ms => Zotero.Promise.delay(ms),
+        request: (url, options) => this.attachmentRequest(url, options, task),
+        decode: bytes => new TextDecoder().decode(bytes),
+        parseHTML: html => new (this.window().DOMParser)().parseFromString(html, "text/html")
+      });
+    },
+
+    async storePDF(item, before, result, task) {
+      let directory;
+      const ensureCurrent = () => {
+        if (!this.active || task.cancelled) throw new Attachments.DownloadError("pdf-cancelled", true);
+        if (!this.editable(item) || item.library?.filesEditable === false) throw new Attachments.DownloadError("read-only");
+        if (JSON.stringify(before) !== JSON.stringify(this.snapshot(item))) throw new Attachments.DownloadError("manually-edited");
+        if (this.hasFullText(item)) throw new Attachments.DownloadError("pdf-existing");
+      };
+      ensureCurrent();
+      try {
+        directory = (await Zotero.Attachments.createTemporaryStorageDirectory()).path;
+        const filename = Zotero.Attachments.getFileBaseNameFromItem(item).slice(0, 150) + ".pdf";
+        await IOUtils.write(PathUtils.join(directory, filename), result.bytes);
+        ensureCurrent();
+        const attachment = await Zotero.Attachments.createURLAttachmentFromTemporaryStorageDirectory({
+          directory, libraryID: item.libraryID, parentItemID: item.id, filename,
+          title: "全文 PDF", url: result.url, contentType: "application/pdf"
+        });
+        return { attachment, filename };
+      } finally {
+        // Only the temporary directory allocated above; never an existing attachment.
+        // Successful native import moves it into storage, so it no longer exists.
+        if (directory && await IOUtils.exists(directory)) await IOUtils.remove(directory, { recursive: true });
+      }
+    },
+
+    async downloadAttachments(items, { win = this.window(), silent = false } = {}) {
+      if (!this.active) return;
+      if (this.busy) { this.alert("上一批操作尚未结束，请稍后再试。", win); return; }
+      const finish = this.beginOperation(), counts = {}, changes = [], outcomes = [], seen = new Set();
+      const task = this.downloadTask = { cancelled: false, xhr: null };
+      const downloader = this.attachmentDownloader(task);
+      let halted = false;
+      const outcome = (item, reason) => {
+        counts[reason] = (counts[reason] || 0) + 1;
+        outcomes.push({ id: item?.id, title: item?.getField("title") || "无标题", reason });
+      };
+      try {
+        for (const item of items) {
+          if (!item || seen.has(item.id)) continue;
+          seen.add(item.id);
+          if (halted || task.cancelled || !this.active) { outcome(item, "pdf-not-attempted"); continue; }
+          if (!this.supported(item)) { outcome(item, "unsupported-type"); continue; }
+          if (!this.editable(item) || item.library?.filesEditable === false) { outcome(item, "read-only"); continue; }
+          if (this.hasFullText(item)) { outcome(item, "pdf-existing"); continue; }
+          if (!Zotero.Attachments?.createURLAttachmentFromTemporaryStorageDirectory) { outcome(item, "pdf-unavailable"); continue; }
+          const before = this.snapshot(item), DOI = Metadata.doiKey(before.DOI);
+          let url = "";
+          if (before.url) {
+            try { url = Attachments.checkedURL(before.url); }
+            catch (error) { if (!DOI) { outcome(item, error.reason); continue; } }
+          }
+          if (!DOI && !url) { outcome(item, "pdf-no-source"); continue; }
+          this.status = `下载全文 PDF：${seen.size}/${items.length} · ${before.title}`;
+          let saving = false;
+          try {
+            const result = await downloader.find({ DOI, url });
+            saving = true;
+            const { filename } = await this.storePDF(item, before, result, task);
+            changes.push(Reports.changedItem({ ...before, pdf: "" }, { ...before, pdf: `${filename}\n${result.url}` }, ["pdf"]));
+            outcome(item, "downloaded");
+          } catch (error) {
+            outcome(item, error.reason || (saving ? "pdf-save-failed" : "pdf-network-failed"));
+            if (error.stopBatch) halted = true;
+            Zotero.debug?.("Scholar Rank: manual PDF result " + (error.reason || "failed"));
+          }
+        }
+        this.showResult(counts, win, changes, { operation: "下载全文 PDF", silent, outcomes });
+        return counts;
+      } finally { this.downloadTask = null; finish(); }
     },
 
     async apply(items, {

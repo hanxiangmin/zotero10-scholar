@@ -340,11 +340,11 @@ async function runSmoke(rootURI) {
     return {fixtureIDs:allItems().map(item=>item.id),scientificData:smokeConfig.withData};
   },true);
 
-  await step("exactly-three-menu-actions-and-direct-metadata-cleanup", async () => {
+  await step("four-menu-actions-and-direct-metadata-cleanup", async () => {
     await win.ZoteroPane.selectItems([fixtures.journal.id]); await menuState(win,[fixtures.journal]);
     const node=win.document.querySelector('[data-l10n-id="zsr10-menu"]');
     const ids=Array.from(node.querySelectorAll("menuitem"),item=>item.getAttribute("data-l10n-id"));
-    same(ids,["zsr10-metadata","zsr10-doi","zsr10-update"],"Only three item commands");
+    same(ids,["zsr10-metadata","zsr10-doi","zsr10-update","zsr10-download"],"Four independent item commands");
     invokeMenu(win,"zsr10-metadata");
     await waitFor("direct metadata update",()=>!plugin.busy && fixtures.journal.getField("DOI")==="10.12345/cleanup-test",12000);
     const value=await snapshot(fixtures.journal);
@@ -370,7 +370,7 @@ async function runSmoke(rootURI) {
     return {rank:after.callNumber,viaMenuDOM:true,undoRedo:true};
   });
 
-  await step("settings-three-buttons-and-independent-automatic-controls", async () => {
+  await step("settings-four-buttons-and-independent-automatic-controls", async () => {
     plugin.showSettings();
     const preferences=await waitFor("new settings",()=>{
       const windows=Services.wm.getEnumerator(null);
@@ -378,7 +378,7 @@ async function runSmoke(rootURI) {
     },12000);
     smokePreviews.add(preferences);
     const doc=preferences.document;
-    for(const id of ["zsr10-metadata","zsr10-doi","zsr10-ranks"]) check(doc.getElementById(id),"Missing management action "+id);
+    for(const id of ["zsr10-metadata","zsr10-doi","zsr10-ranks","zsr10-download","zsr10-cancel-download"]) check(doc.getElementById(id),"Missing management action "+id);
     check(!doc.getElementById("zsr10-restore-manual") && !doc.getElementById("zsr10-manual"),"Retired controls removed");
     same(doc.querySelectorAll("#zsr10-metadata-rules input").length,8,"Individual rule switches");
     same(doc.getElementById("zsr10-title-case").value,"sentence","Sentence case default");
@@ -404,7 +404,7 @@ async function runSmoke(rootURI) {
     fixtures.journal.setField("callNumber","Another manual value"); await fixtures.journal.saveTx({skipSelect:true});
     await win.ZoteroPane.selectItems([fixtures.journal.id]); doc.getElementById("zsr10-ranks").click();
     await waitFor("settings updates main-window selection",()=>!plugin.busy && fixtures.journal.getField("callNumber")===smokeConfig.expectedJournal,12000);
-    preferences.close(); return {threeActions:true,toggles:true,selectionFromMainWindow:true};
+    preferences.close(); return {fourActions:true,toggles:true,selectionFromMainWindow:true};
   });
 
   await step("automatic-processing-is-offline-and-preserves-existing-call-number", async () => {
@@ -617,13 +617,57 @@ async function runSmoke(rootURI) {
     dialog.close();return {realReportVenueStrings:true,ranks:expected,conflictPreserved:true,nativeDiff:true};
   });
 
-  await step("disable-and-enable-cleanly-registers-three-commands", async () => {
+  await step("live-manual-PDF-download-stores-one-real-full-text-and-preserves-metadata", async () => {
+    await guard();
+    const item=new Zotero.Item("conferencePaper");item.libraryID=Zotero.Libraries.userLibraryID;
+    for(const [field,value] of Object.entries({title:"Dynamic hypergraph neural networks",DOI:"10.24963/ijcai.2019/366",
+      url:"https://www.ijcai.org/proceedings/2019/0366.pdf",date:"2019",conferenceName:"IJCAI",callNumber:"B",extra})) item.setField(field,value);
+    await item.saveTx({skipSelect:true});const before=await snapshot(item);
+    const request=plugin.attachmentRequest,calls=[];
+    plugin.attachmentRequest=async function(url,options,task){calls.push(url);return request.call(this,url,options,task);};
+    const previous=new Set(plugin.resultWindows);
+    try {
+      await win.ZoteroPane.selectItems([item.id]);await menuState(win,[item]);invokeMenu(win,"zsr10-download");
+      await waitFor("manual PDF command finishes",()=>!plugin.busy&&item.numFileAttachmentsWithContentType("application/pdf")===1,120000);
+      same(await snapshot(item),before,"PDF download does not change any metadata");
+      const attachments=await Zotero.Items.getAsync(item.getAttachments());
+      const pdf=attachments.find(child=>child.attachmentContentType==="application/pdf");
+      check(pdf&&pdf.parentID===item.id,"Stored as child of original paper");
+      const path=await pdf.getFilePathAsync();check(path&&await IOUtils.exists(path),"Downloaded file exists");
+      const bytes=await IOUtils.read(path);check(bytes.length>10000,"Real publication PDF is not a placeholder");
+      check(new TextDecoder().decode(bytes.slice(0,1024)).includes("%PDF-"),"Real PDF signature");
+      const requestCount=calls.length;const again=await plugin.downloadAttachments([item],{silent:true});
+      same(again["pdf-existing"],1,"Repeated command skips existing PDF");same(calls.length,requestCount,"No second network lookup");
+      same(item.getAttachments(),[pdf.id],"No duplicate attachment");
+      same((await IOUtils.read(path)).length,bytes.length,"Existing file remains unchanged");
+      check(calls.every(url=>!new URL(url).hostname.includes("google")),"No Google request");
+      const dialog=await waitFor("PDF result window",()=>[...plugin.resultWindows].find(candidate=>!previous.has(candidate)&&candidate.document?.querySelector('tr[data-field="pdf"]')),12000);
+      smokePreviews.add(dialog);check(dialog.document.getElementById("zsr10-results-heading").textContent.includes("1 份 PDF"),"Real success count shown");
+      dialog.close();return {liveNetwork:true,DOI:item.getField("DOI"),bytes:bytes.length,attachmentKey:pdf.key,requests:calls.length,noGoogle:true,noDuplicates:true};
+    } finally {plugin.attachmentRequest=request;}
+  });
+
+  await step("native-manual-PDF-access-limit-stops-the-batch-without-saves", async () => {
+    await guard();
+    const items=[];
+    for(let i=0;i<2;i++) items.push(await create({title:"Synthetic PDF access-limit fixture "+i,url:"https://publisher.example.org/blocked",extra}));
+    const request=plugin.attachmentRequest;let calls=0;
+    plugin.attachmentRequest=async()=>{calls++;return {status:429,response:null,getResponseHeader:()=>null};};
+    try {
+      const counts=await plugin.downloadAttachments(items,{silent:true});
+      same(counts["pdf-access-limited"],1,"Access limit reported");same(counts["pdf-not-attempted"],1,"Remaining item not attempted");
+      same(calls,1,"No automatic retry");same(items.map(item=>item.getAttachments().length),[0,0],"No files stored");
+      return {syntheticHTTP:true,status:429,requests:calls,noFiles:true};
+    } finally {plugin.attachmentRequest=request;}
+  });
+
+  await step("disable-and-enable-cleanly-registers-four-commands", async () => {
     plugin.alert=originalAlert;
     await productAddon.disable(); await waitFor("plugin disabled",()=>!Zotero.ScholarRank10,12000);
     same((await menuState(win,[])).registrations.length,0,"Menus removed on disable");
     await productAddon.enable(); plugin=await waitFor("plugin re-enabled",()=>Zotero.ScholarRank10?.prefID && Zotero.ScholarRank10,12000);
     same((await menuState(win,[fixtures.journal])).registrations.length,2,"Menus registered once");
-    same(win.document.querySelector('[data-l10n-id="zsr10-menu"]').querySelectorAll("menuitem").length,3,"Exactly three commands after reload");
+    same(win.document.querySelector('[data-l10n-id="zsr10-menu"]').querySelectorAll("menuitem").length,4,"Exactly four commands after reload");
     same(fixtures.journal.getField("extra"),extra,"Reload does not write Extra");
     return {reload:true,summaryDialogsStubbed:alerts};
   });

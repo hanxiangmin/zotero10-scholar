@@ -7,7 +7,8 @@ Node.js 22+、Python 3.10+，无额外依赖；原生运行环境为 Zotero 10.0
 | `src/core.js` | 指标包校验、匹配、紧凑显示和直接更新计划 |
 | `src/metadata.js` | 纯整理规则、缩写索引、重复检测、DOI 字段及作者校验 |
 | `src/search.js` | 无 DOI 的检索上下文、候选身份检查及最终结果再核对 |
-| `src/plugin.js` | 三个菜单入口、Zotero API、数据导入与事务写入 |
+| `src/plugin.js` | 四个手动入口、Zotero API、数据导入与事务写入 |
+| `src/attachments.js` | 独立手动 PDF 下载器、来源/重定向检查、限流停止和 PDF 内容验证 |
 | `src/reports.js`、`results*` | 保存后的字段差异及只读结果窗口 |
 | `prefs*` | 管理页、自动开关和规则设置 |
 | `scripts/` | 构建、数据转换、源码导出与隔离测试准备 |
@@ -17,7 +18,9 @@ Node.js 22+、Python 3.10+，无额外依赖；原生运行环境为 Zotero 10.0
 
 运行时不读写 Extra 状态，不删除旧版本遗留内容。手动指标更新在匹配成功后直接覆盖，自动新条目处理只填空索书号。任何未匹配或会议名称冲突均保留原值，不能由拒绝候选推导出清空旧等级。
 
-三个菜单分别调用 `apply({metadata:true,updateRanks:false})`、`updateByDOI()` 和指标 `apply()`。第二个保留内部方法名，但界面叫“联网更新元数据”。不能把 DOI 或标题联网查询接入新增/修改通知器。自动整理和自动分区使用各自开关；共同开启时先整理再匹配。
+四个菜单分别调用 `apply({metadata:true,updateRanks:false})`、`updateByDOI()`、指标 `apply()` 和 `downloadAttachments()`。第二个保留内部方法名，但界面叫“联网更新元数据”。DOI/标题查询与附件下载均不得接入新增/修改通知器。自动整理和自动分区使用各自开关；共同开启时先整理再匹配。
+
+手动 PDF 下载使用独立、可取消的队列。HTTP 禁止自动重定向/重试，所有跳转经过 URL 校验；不使用网页翻译器、浏览器自动验证或自定义解析器。先尝试 DOI 和论文 URL 中明确的 PDF 元数据链接，再向 Zotero `https://services.zotero.org/oa/search` 发送 DOI 查询开放获取候选。每篇最多 16 个候选/跳转请求，另有一次 OA 查询；单请求 30 秒、请求间隔至少 1.5 秒，文件上限 50 MB。PDF 头和 EOF 标记通过检查后才使用原生临时存储/附件接口保存。保存前再次检查条目字段、编辑/文件权限、既有全文与取消状态；只清理本次分配的临时目录。原文献不调用保存、不写 Extra，附件与元数据的撤销语义分开。
 
 DOI 查询使用 `new Zotero.Translate.Search()`、`setIdentifier({DOI})`、`getTranslators()`、`setTranslator()` 和 `translate({libraryID:false,saveAttachments:false})`。这些接口已通过本机 Zotero 10 源码核对；原生翻译器由 Zotero 提供，不移植其代码。
 [Zotero 查询翻译器说明](https://www.zotero.org/support/dev/translators) · [JavaScript API](https://www.zotero.org/support/dev/client_coding/javascript_api)
