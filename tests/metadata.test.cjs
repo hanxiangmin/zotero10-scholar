@@ -222,10 +222,10 @@ function conferenceCatalog() {
   ]}]);
 }
 
-test("conference metadata uses a standard full name in both fields without deriving or changing date", () => {
+test("conference metadata expands acronyms while preserving the official annual proceedings title", () => {
   const before=item({itemType:"conferencePaper",conferenceName:"MICCAI",proceedingsTitle:"Medical Image Computing and Computer Assisted Intervention – MICCAI-2005",date:"2025"});
   const catalog=conferenceCatalog(), result=M.plan(before,{},undefined,catalog);
-  assert.equal(result.fields.conferenceName,MICCAI);assert.equal(result.fields.proceedingsTitle,MICCAI);
+  assert.equal(result.fields.conferenceName,MICCAI);assert.equal(result.fields.proceedingsTitle,undefined);
   assert.equal(result.fields.date,undefined);assert.equal(result.fields.callNumber,undefined);
   assert.equal(M.plan(apply(before,result),{},undefined,catalog).action,"skip");
   assert.equal(M.plan(before,{conference:false},undefined,catalog).fields.conferenceName,undefined);
@@ -245,14 +245,29 @@ test("standardization abstains for workshops, unknown/conflicting names and jour
   ]) assert.deepEqual(M.standardConferenceNames({itemType:"conferencePaper",...fields},catalog),{});
 });
 
-test("DOI enrichment shares the conference-name rule instead of restoring annual suffixes", () => {
+test("DOI enrichment restores the publisher proceedings title without replacing it by a CCF name", () => {
   const before=item({itemType:"conferencePaper",DOI:"10.1234/x",conferenceName:MICCAI,proceedingsTitle:MICCAI,date:"2025"});
   const source={itemType:"bookSection",DOI:before.DOI,title:"A Test Title",date:"2026",bookTitle:"Medical Image Computing and Computer Assisted Intervention – MICCAI 2025",
     scholarCrossref:crossrefSource("book-chapter",{assertion:confAssertions(2025)})};
   const result=M.doiPlan(before,source,{},conferenceCatalog());
-  assert.equal(result.fields.proceedingsTitle,undefined);assert.equal(result.fields.conferenceName,undefined);
+  assert.equal(result.fields.proceedingsTitle,source.bookTitle);assert.equal(result.fields.conferenceName,undefined);
   assert.equal(result.fields.date,undefined);
   assert.equal(M.doiPlan(before,source,{conference:false},conferenceCatalog()).fields.proceedingsTitle,source.bookTitle);
+});
+
+test("official and historical conference titles survive local cleanup", () => {
+  const before=item({itemType:"conferencePaper",conferenceName:"2009 IEEE Conference on Computer Vision and Pattern Recognition",proceedingsTitle:"2009 IEEE Conference on Computer Vision and Pattern Recognition"});
+  const catalog=new Catalog([{schemaVersion:1,kind:"ccf",edition:2026,source:"Synthetic",records:[{type:"conference",title:"IEEE/CVF Computer Vision and Pattern Recognition Conference",abbreviation:"CVPR",rank:"A"}]}]);
+  const plan=M.plan(before,{},undefined,catalog);
+  assert.equal(plan.fields.conferenceName,undefined);assert.equal(plan.fields.proceedingsTitle,undefined);
+  assert.equal(catalog.lookup(before).text,"A");
+});
+
+test("publisher metadata prefers a full BibTeX book title over a meeting-series meta tag", () => {
+  const P=require("../src/publications.js");
+  const page='<meta name="citation_title" content="A paper"><meta name="citation_conference_title" content="USENIX Security Symposium"><pre>booktitle = {34th {USENIX} Security Symposium ({USENIX} Security 25)}</pre>';
+  assert.equal(P.publisherMetadata(page).proceedingsTitle,"34th USENIX Security Symposium (USENIX Security 25)");
+  assert.equal(P.publisherMetadata('<meta name="citation_title" content="A paper"><h4>Advances in Neural Information Processing Systems 34 (NeurIPS 2021)</h4>').proceedingsTitle,"Advances in Neural Information Processing Systems 34");
 });
 
 
@@ -279,7 +294,7 @@ test("a no-DOI conference record requires an agreeing title, ordered author evid
   const record={id:"https://dblp.org/rec/conf/nips/Synthetic21",itemType:"conferencePaper",title:transmilTitle,date:"2021",proceedingsTitle:"NeurIPS",
     url:"https://proceedings.neurips.cc/paper/2021/hash/test-Abstract.html",creators:transmilItem.creators};
   const plan=S.conferencePlan(transmilItem,[record],{},neuripsCatalog);
-  assert.equal(plan.fields.conferenceName,neuripsTitle);assert.equal(plan.fields.proceedingsTitle,neuripsTitle);
+  assert.equal(plan.fields.conferenceName,neuripsTitle);assert.equal(plan.fields.proceedingsTitle,undefined);
   assert.equal(plan.fields.DOI,undefined);assert.equal(plan.creators,undefined);
   assert.equal(S.conferencePlan(transmilItem,[record,{...record,id:record.id+"Other"}],{},neuripsCatalog).reason,"search-ambiguous");
   for (const change of [{title:"A different paper"},{date:"2015"},{proceedingsTitle:"NeurIPS Workshops"},{creators:[{creatorType:"author",firstName:"Other",lastName:"Shao"}]}])

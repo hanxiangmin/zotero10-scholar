@@ -185,7 +185,12 @@ SELECT ?paper ?title ?year ?venue ?url ?name ?ordinal WHERE {
     if (found.length !== 1) return {action:"skip",reason:found.length ? "search-ambiguous" : "search-no-match",fields:{}};
     // DBLP author names are used to verify identity. Preserve Zotero's name
     // components instead of guessing surname boundaries from a display name.
-    return verifiedPlan(item,found[0],options,catalog,false);
+    const source={...found[0]};
+    if (item.proceedingsTitle && /^[\p{L}\p{N}-]{2,15}$/u.test(source.proceedingsTitle || "")) {
+      source.conferenceName = source.proceedingsTitle;
+      delete source.proceedingsTitle;
+    }
+    return verifiedPlan(item,source,options,catalog,false);
   }
 
   function arxivDOI(item) {

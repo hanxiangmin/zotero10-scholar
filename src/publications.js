@@ -90,6 +90,8 @@
     }
     for (const field of Metadata.DOI_FIELDS) {
       const value = text(source[field]);
+      if (field === "proceedingsTitle" && source.source === "DBLP" && text(item[field])
+          && /^[\p{L}\p{N}-]{2,15}$/u.test(value)) continue;
       if (value && value.length <= 100000 && !/\u0000/.test(value) && value !== text(item[field])) fields[field] = value;
     }
     const after = {...item, ...fields, itemType: source.itemType};
@@ -189,7 +191,13 @@ SELECT ?paper ?title ?year ?eventYear ?venue ?url ?doi ?pages ?volume ?issue ?na
       if (name.startsWith("citation_") && attrs.content) values[name] = attrs.content;
     }
     const first = values.citation_firstpage, last = values.citation_lastpage;
+    const bibBook = html.match(/\bbooktitle\s*=(?:\s|\\[nrt])*{((?:[^{}]|{[^{}]*})+)}/i)
+      || html.match(/\bbooktitle\s*=(?:\s|\\[nrt])*"([^"\r\n]+)"/i);
     return {title:values.citation_title, arxivID:values.citation_arxiv_id, DOI:values.citation_doi,
+      proceedingsTitle:values.citation_book_title
+        || (bibBook ? decode(bibBook[1]).replace(/[{}]/g,"").replace(/\\[nrt]/g," ").replace(/\s+/g," ").trim() : undefined)
+        || values.citation_conference_title
+        || html.match(/>\s*(Advances in Neural Information Processing Systems\s+\d{1,3})(?=\s*(?:<|\())/i)?.[1],
       volume:values.citation_volume, issue:values.citation_issue,
       pages:first ? last && last !== first ? first + "–" + last : first : undefined};
   }
@@ -229,7 +237,7 @@ SELECT ?paper ?title ?year ?eventYear ?venue ?url ?doi ?pages ?volume ?issue ?na
       let url;
       try { url = new URL(source.url); } catch (_) { return source; }
       if (!["https:","http:"].includes(url.protocol) || url.username || url.password) return source;
-      const allowed = ["proceedings.neurips.cc","papers.nips.cc","proceedings.mlr.press","jmlr.org","www.jmlr.org","openaccess.thecvf.com","aclanthology.org","www.ijcai.org"];
+      const allowed = ["proceedings.neurips.cc","papers.nips.cc","proceedings.mlr.press","jmlr.org","www.jmlr.org","openaccess.thecvf.com","aclanthology.org","www.ijcai.org","www.usenix.org"];
       if (!allowed.includes(url.hostname)) return source;
       url.protocol = "https:";
       const html = await this.get("publisher",url.href,url.href);
@@ -237,6 +245,7 @@ SELECT ?paper ?title ?year ?eventYear ?venue ?url ?doi ?pages ?volume ?issue ?na
       if (Search.titleKey(fields.title) !== Search.titleKey(source.title)) return source;
       const updated = {...source};
       for (const field of ["volume","issue","pages"]) if (text(fields[field])) updated[field] = fields[field].trim();
+      if (source.itemType === "conferencePaper" && text(fields.proceedingsTitle)) updated.proceedingsTitle = fields.proceedingsTitle.trim();
       updated.publisherURL = url.href;
       return updated;
     }

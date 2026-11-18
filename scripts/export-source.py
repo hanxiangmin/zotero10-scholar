@@ -51,6 +51,7 @@ FILES = (
     "docs/PUBLISHING.md",
     "docs/DATA_FORMAT.md",
     "docs/TESTING.md",
+    "docs/VENUE_NAMES.md",
     "docs/images/scholar-rank-display.png",
     "docs/images/scholar-rank-settings.png",
     "docs/images/scholar-rank-results.png",

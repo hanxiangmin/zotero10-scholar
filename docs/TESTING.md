@@ -54,3 +54,5 @@ python scripts/prepare-smoke.py --auto-close
 3.2.1 的独立实机步骤还联网核对 TransMIL 的 DBLP 会议记录、标准 NeurIPS 名称和 CCF A，以及 AllSet 预印本的 DataCite 标题、arXiv DOI、2021 年份和重复更新。
 
 3.3.0 新增全库范围加载、正式版本筛选、改名与关联 DOI、SICI 标识、编辑者保留、停止后保留已完成修改等回归。实机检查包含预印本原地转换、原条目键及文件夹/子附件/笔记、原生撤销/重做，以及 AllSet 真实正式版查找。
+
+3.3.1 新增官方论文集标题保留、历史会议名称、期刊别名及跨表 ISSN 关联、旧分刊与后继刊物隔离的回归。独立原生场景验证 NeurIPS 论文集名称在整理、指标更新和 Zotero BibTeX 导出后保持正确。

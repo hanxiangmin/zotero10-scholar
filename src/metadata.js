@@ -93,7 +93,12 @@
     const matched = names.map(name => catalog.lookup({ itemType: "conferencePaper", proceedingsTitle: name }).provenance?.ccf?.matchedTitle);
     if (matched.some(name => !name) || new Set(matched).size !== 1) return {};
     const standard = matched[0].trim().replace(/\s+/g, " ").replace(/\s*,\s*/g, ", ").replace(/\s*&\s*/g, " & ");
-    return Object.fromEntries(["conferenceName", "proceedingsTitle"].filter(field => text(item[field]) !== standard).map(field => [field, standard]));
+    // The proceedings book title is citation metadata, not the CCF series name.
+    // Preserve official full names (including historical ones); only expand a
+    // missing/acronym-only conference-name field after consistent identification.
+    const current = text(item.conferenceName).trim();
+    return !current || /^[\p{L}\p{N}-]{2,15}$/u.test(current)
+      ? current === standard ? {} : {conferenceName:standard} : {};
   }
 
   function plan(item, options = {}, abbreviations = new Abbreviations(), catalog = null) {

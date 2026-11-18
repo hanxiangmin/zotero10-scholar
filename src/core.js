@@ -22,6 +22,39 @@
     return [...result];
   }
 
+  // Distinct publication identities, including discontinued titles. A successor
+  // is deliberately not an alias: its present-day metrics cannot be inherited.
+  // Names/ISSNs: IEEE SMC title-change notice, DOI 10.1109/TSMCA.2012.2224500,
+  // and the registered ISSNs in the journal datasets. See docs/VENUE_NAMES.md.
+  const JOURNALS = [
+    {id:"tsmc-systems",title:"IEEE Transactions on Systems, Man, and Cybernetics: Systems",issns:["2168-2216","2168-2232"],aliases:["IEEE Transactions on Systems Man Cybernetics-Systems","IEEE Transactions on Systems, Man and Cybernetics: Systems"]},
+    {id:"tsmc-a",title:"IEEE Transactions on Systems, Man, and Cybernetics, Part A: Systems and Humans",issns:["1083-4427","1558-2426"],aliases:["IEEE Transactions on Systems, Man, and Cybernetics Part A: Systems and Humans","IEEE Transactions on Systems Man and Cybernetics Part A-Systems and Humans"]},
+    {id:"tsmc-b",title:"IEEE Transactions on Systems, Man, and Cybernetics, Part B (Cybernetics)",issns:["1083-4419","1941-0492"],aliases:["IEEE Transactions on Systems, Man, and Cybernetics Part B: Cybernetics","IEEE Transactions on Systems Man and Cybernetics Part B-Cybernetics","IEEE Transactions on Systems, Man, and Cybernetics, Part B: Cybernetics"]},
+    {id:"tsmc-c",title:"IEEE Transactions on Systems, Man, and Cybernetics, Part C: Applications and Reviews",issns:["1094-6977","1558-2442"],aliases:["IEEE Transactions on Systems, Man, and Cybernetics Part C: Applications and Reviews","IEEE Transactions on Systems Man and Cybernetics Part C-Applications and Reviews"]},
+    {id:"tsmc-original",title:"IEEE Transactions on Systems, Man, and Cybernetics",issns:["0018-9472","2168-2909"],aliases:[]},
+    {id:"tcyb",title:"IEEE Transactions on Cybernetics",issns:["2168-2267","2168-2275"],aliases:[]},
+    {id:"thms",title:"IEEE Transactions on Human-Machine Systems",issns:["2168-2291","2168-2305"],aliases:[]},
+    {id:"tnn",title:"IEEE Transactions on Neural Networks",issns:["1045-9227","1941-0093"],aliases:[]},
+    {id:"tnnls",title:"IEEE Transactions on Neural Networks and Learning Systems",issns:["2162-237X","2162-2388"],aliases:[]}
+  ];
+  const JOURNAL_NAMES = new Map(), JOURNAL_ISSNS = new Map();
+  for (const journal of JOURNALS) {
+    for (const name of [journal.title,...journal.aliases]) JOURNAL_NAMES.set(normalizeTitle(name),journal);
+    for (const issn of normalizeISSNs(journal.issns)) JOURNAL_ISSNS.set(issn,journal);
+  }
+
+  function journalIdentity(item) {
+    const named = JOURNAL_NAMES.get(normalizeTitle(item.publicationTitle || item.title));
+    const byISSN = [...new Set(normalizeISSNs(item.ISSN || item.issns).map(issn=>JOURNAL_ISSNS.get(issn)).filter(Boolean))];
+    if (byISSN.length > 1 || (named && byISSN.some(journal=>journal !== named))) return {reason:"journal-identity-conflict"};
+    return {record:named || byISSN[0] || null};
+  }
+
+  function journalNames(record) {
+    const identity = journalIdentity(record).record;
+    return [...new Set([record.title,...(record.aliases || []),...(identity ? [identity.title,...identity.aliases] : [])])];
+  }
+
   function validYear(value) {
     return Number.isInteger(value) && value >= 2000 && value <= 2100;
   }
@@ -77,16 +110,23 @@
     if (!list.includes(record)) list.push(record);
   }
 
-  function indexDataset(input) {
+  function indexDataset(input, sharedISSNs = new Map()) {
     const dataset = validateDataset(input);
     const names = new Map(), issns = new Map();
     for (const record of dataset.records) {
       const prefix = dataset.kind === "ccf" ? `${record.type}:` : "";
-      for (const name of [record.title, ...record.aliases, record.abbreviation]) {
+      const journal = dataset.kind !== "ccf" || record.type === "journal";
+      const namesForRecord = journal ? journalNames(record) : [record.title,...record.aliases];
+      for (const name of [...namesForRecord, record.abbreviation]) {
         const normalized = normalizeTitle(name);
         if (normalized) addToIndex(names, prefix + normalized, record);
       }
-      for (const issn of record.issns) addToIndex(issns, issn, record);
+      const identity = journal ? journalIdentity(record).record : null;
+      const linked = journal ? namesForRecord.flatMap(name => {
+        const entry = sharedISSNs.get(normalizeTitle(name));
+        return entry?.identities.size === 1 ? [...entry.issns] : [];
+      }) : [];
+      for (const issn of new Set([...record.issns,...(identity?.issns || []),...linked])) addToIndex(issns, issn, record);
     }
     return { dataset, names, issns };
   }
@@ -108,6 +148,7 @@
 
   function journalMatch(index, item) {
     if (!index) return { record: null, reason: "no-dataset" };
+    if (journalIdentity(item).reason) return {record:null,reason:"journal-identity-conflict"};
     const found = normalizeISSNs(item.ISSN).flatMap(issn => index.issns.get(issn) || [])
       .filter(record => index.dataset.kind !== "ccf" || record.type === "journal");
     const prefix = index.dataset.kind === "ccf" ? "journal:" : "";
@@ -130,6 +171,17 @@
     const ordinal = "(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth)";
     let name = normalizeTitle(value).replace(new RegExp("\\b(" + ordinal + ")(?=international\\b)", "g"), "$1 ");
     const short = normalizeTitle(abbreviation);
+    // DBLP's full proceedings titles may append acronym, year and location.
+    // Strip that bibliographic suffix only after an explicit acronym/year pair;
+    // the remaining full title must still agree (CCC collisions stay rejected).
+    const parts = String(value || "").split(",");
+    if (short && parts.length > 1 && new RegExp("^"+short+" ?(?:(?:19|20)\\d{2}|\\d{2})(?: |$)").test(normalizeTitle(parts.slice(1).join(" ")))) name = normalizeTitle(parts[0]);
+    if (short === "pricai" && /^pricai (?:19|20)\d{2} trends in artificial intelligence$/.test(name)) {
+      name = "pacific rim international conference on artificial intelligence";
+    }
+    if (["usenixsecurity","usenix security"].includes(short)
+        && /^(?:\d+(?:st|nd|rd|th) )?usenix security symposium(?: usenix security (?:\d{2}|(?:19|20)\d{2}))?$/.test(name)) name = "usenix security symposium";
+    if (short.length >= 3) name = name.replace(new RegExp("\\b"+short+"(?=(?:\\d{2}|(?:19|20)\\d{2})\\b)","g"),short+" ");
     // This proceedings series uses a volume number instead of a conference
     // prefix. NIPS is the older name of the same meeting.
     if (short === "neurips") {
@@ -145,7 +197,7 @@
       if (match) name = match.index ? name.slice(0, match.index).trim() : short;
     }
     name = name.replace(/\s+(?:19|20)\d{2}$/, "");
-    const leading = new RegExp("^(?:(?:proceedings|of|the|ieee|acm|cvf|iapr|international|annual|conference|on|\\d+(?:st|nd|rd|th)?|" + ordinal + ")\\s+)+");
+    const leading = new RegExp("^(?:(?:proceedings|of|the|ieee\\s+computer\\s+society|ieee|acm|cvf|iapr|international|annual|conference|on|\\d+(?:st|nd|rd|th)?|" + ordinal + ")\\s+)+");
     name = name.replace(leading, "");
     // SIGKDD may precede either 'Conference' or 'International Conference'.
     if (short && name.startsWith(short + " ")) name = name.slice(short.length).trim().replace(leading, "");
@@ -200,12 +252,25 @@
 
   class Catalog {
     constructor(datasets) {
+      this.datasets = {};
       this.indexes = {};
       for (const data of datasets) this.replace(data);
     }
     replace(data) {
-      const index = indexDataset(data);
-      this.indexes[data.kind] = index;
+      this.datasets[data.kind] = validateDataset(data);
+      const shared = new Map();
+      for (const dataset of Object.values(this.datasets)) for (const record of dataset.records) {
+        if (dataset.kind === "ccf" && record.type !== "journal") continue;
+        const identity = journalIdentity(record).record;
+        for (const name of journalNames(record)) {
+          const key = normalizeTitle(name);
+          if (!shared.has(key)) shared.set(key,{identities:new Set(),issns:new Set()});
+          const entry = shared.get(key);
+          entry.identities.add(identity?.id || normalizeTitle(record.title));
+          for (const issn of [...record.issns,...(identity?.issns || [])]) entry.issns.add(issn);
+        }
+      }
+      for (const [kind,dataset] of Object.entries(this.datasets)) this.indexes[kind] = indexDataset(dataset,shared);
     }
     list() {
       return Object.values(this.indexes).map(({ dataset: { records, ...metadata } }) => ({ ...metadata, count: records.length }));
@@ -264,7 +329,7 @@
     return { action: "write", callNumber: result.text };
   }
 
-  const api = { Catalog, validateDataset, normalizeTitle, normalizeISSNs, selectQuartile, planUpdate };
+  const api = { Catalog, validateDataset, normalizeTitle, normalizeISSNs, selectQuartile, planUpdate, journalIdentity };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScholarCore = api;
 })(globalThis);

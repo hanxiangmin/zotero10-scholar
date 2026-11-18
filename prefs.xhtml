@@ -47,7 +47,7 @@
     <html:label for="zsr10-protected-terms">额外保留写法的术语（空格或逗号分隔）：</html:label>
     <html:input id="zsr10-protected-terms" type="text" maxlength="10000" placeholder="例如：ResNet iPhone" style="margin:8px 0"/>
     <description>保留 MRI、fMRI、ccRCC 等术语和混合大小写模型名；其他专名可在上面补充。整理与 DOI 更新采用同一标题规则，富文本不自动改写。语言和期刊缩写仅补全空值。</description>
-    <description>已识别的会议名称与论文集标题统一为标准全称，不附加年份；年份由日期字段保存。Workshop、名称冲突或未匹配会议不强行改名。</description>
+    <description>保留官方刊名、历史名称和对应年份的论文集标题。已识别的会议仅补全空名称或展开简称；指标通过别名与 ISSN 匹配，Workshop 和名称冲突不强行归并。</description>
     <html:p id="zsr10-abbreviation-summary" style="white-space:pre-wrap"></html:p>
     <html:button id="zsr10-import-abbreviations">导入期刊缩写 JSON…</html:button>
   </groupbox>

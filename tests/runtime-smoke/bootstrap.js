@@ -421,7 +421,7 @@ async function runSmoke(rootURI) {
         meeting.setField("date","2025");meeting.setField("callNumber","Auto must keep");await meeting.saveTx({skipSelect:true});
         const standard="International Conference on Medical Image Computing and Computer-Assisted Intervention";
         await waitFor("automatic conference standardization",()=>!plugin.busy && meeting.getField("conferenceName")===standard,12000);await plugin.pendingAuto;
-        same(meeting.getField("proceedingsTitle"),standard,"Standard full proceedings title without year suffix");
+        same(meeting.getField("proceedingsTitle"),"Medical Image Computing and Computer Assisted Intervention – MICCAI-2005","Historical proceedings title retained");
         same(meeting.getField("date"),"2025","Name cleanup never infers date from 2005 suffix");
         same(meeting.getField("title"),"Fictional meeting test: A study of fMRI","Automatic subtitle capitalization");
         same(meeting.getField("callNumber"),"Auto must keep","Name cleanup respects rank automatic boundary");
@@ -621,7 +621,7 @@ async function runSmoke(rootURI) {
     await record.saveTx({skipSelect:true});
     same((await plugin.updateByDOI([record],{silent:true})).written,1,"Live DBLP metadata update");
     same(record.getField("conferenceName"),"Conference on Neural Information Processing Systems","Standard NeurIPS name");
-    same(record.getField("proceedingsTitle"),record.getField("conferenceName"),"Consistent proceedings title");
+    same(record.getField("proceedingsTitle"),"Advances in Neural Information Processing Systems 34","Official proceedings title retained");
     same(record.getField("DOI"),"","No invented proceedings DOI");
     same((await plugin.apply([record],{silent:true})).written,1,"Separate rank command");
     same(record.getField("callNumber"),"A","Bundled NeurIPS CCF grade");
@@ -659,7 +659,7 @@ async function runSmoke(rootURI) {
     same(record.getField("date"),"2025","Explicit conference year overrides print 2026");
     const standard="International Conference on Medical Image Computing and Computer-Assisted Intervention";
     same(record.getField("conferenceName"),standard,"DOI uses standard conference name");
-    same(record.getField("proceedingsTitle"),standard,"DOI does not restore annual book suffix");
+    same(record.getField("proceedingsTitle"),"Medical Image Computing and Computer Assisted Intervention – MICCAI 2025","DOI restores official annual proceedings title");
     same(record.getField("title"),"Multimodal hypergraph guide learning for non-invasive ccRCC survival prediction","Sentence case and ccRCC protection");
     same(record.itemType,"conferencePaper","Do not convert library item type");
     same(record.getField("extra"),extra,"Conference Extra untouched");
@@ -675,6 +675,26 @@ async function runSmoke(rootURI) {
     same(ccc.hasData,false,"Chinese Control Conference is not Computational Complexity");
     same(plugin.catalog.lookup({itemType:"journalArticle",publicationTitle:"Proceedings of the AAAI Conference on Artificial Intelligence"}).text,"A","AAAI journal-article import");
     return {ICASSP:"B",CCC:"rejected",AAAI:"A"};
+  });
+
+  await step("official-proceedings-survive-cleanup-and-native-bibtex-export", async () => {
+    await guard();
+    const paper=new Zotero.Item("conferencePaper");paper.libraryID=Zotero.Libraries.userLibraryID;
+    const book="Advances in Neural Information Processing Systems 34";
+    for(const [field,value] of Object.entries({title:"Proceedings preservation regression",proceedingsTitle:book,date:"2021",extra}))paper.setField(field,value);
+    paper.setCreators([{creatorType:"author",firstName:"Test",lastName:"Author"}]);
+    await paper.saveTx({skipSelect:true});
+    await plugin.apply([paper],{metadata:true,silent:true});await plugin.apply([paper],{silent:true});
+    same(paper.getField("proceedingsTitle"),book,"Official book title retained");
+    same(paper.getField("conferenceName"),"Conference on Neural Information Processing Systems","Separate meeting name");
+    same(paper.getField("callNumber"),"A","Aliases identify CCF A");
+    const translator=new Zotero.Translate.Export();translator.setItems([paper]);
+    const exporters=await Zotero.Translators.getAllForType("export");
+    const bibtex=exporters.find(candidate=>candidate.label==="BibTeX");check(bibtex,"Native BibTeX translator available");
+    translator.setTranslator(bibtex);await translator.translate();
+    const output=translator.string;await IOUtils.writeUTF8(PathUtils.join(smokeConfig.dataDir,"native-proceedings.bib"),output);
+    check(typeof output==="string"&&output.replace(/[{}]/g,"").toLowerCase().includes(book.toLowerCase()),"BibTeX retains official proceedings title");
+    return {officialBook:book,rank:"A",nativeBibTeX:true};
   });
 
   await step("four-report-conferences-recover-ranks-without-clearing-conflicts", async () => {
@@ -700,11 +720,11 @@ async function runSmoke(rootURI) {
     smokePreviews.add(dialog);
     same([...dialog.document.querySelectorAll('tr[data-field="callNumber"]')].map(row=>[...row.querySelectorAll('td')].map(cell=>cell.textContent)),expected.map(rank=>["索书号（分区指标）","（空）",rank]),"Before/after reports actual restored values");
     same((await plugin.apply(items,{silent:true})).unchanged,4,"Repeating update cannot clear ranks");
-    same((await plugin.apply(items,{metadata:true,silent:true})).written,4,"Standardize four conference names");
+    same((await plugin.apply(items,{metadata:true,silent:true})).written,2,"Fill missing/abbreviated conference names");
     for (let i=0;i<items.length;i++) {
       const standard=i===0 ? "ACM SIGKDD Conference on Knowledge Discovery and Data Mining" : "International Joint Conference on Artificial Intelligence";
-      same(items[i].getField("conferenceName"),standard,"Conference name standardized");
-      same(items[i].getField("proceedingsTitle"),standard,"Proceedings title standardized");
+      same(items[i].getField("conferenceName"),i<2 ? standard : definitions[i][1],"Official full conference names retained");
+      same(items[i].getField("proceedingsTitle"),definitions[i][2],"Official proceedings title retained");
       same(items[i].getField("date"),definitions[i][3],"Offline name cleanup preserves date");
       same(items[i].getField("callNumber"),expected[i],"Metadata cleanup preserves rank");
       same(items[i].getField("extra"),extra,"Extra unchanged");

@@ -27,7 +27,7 @@ var ScholarRankPrefs = {
     terms.value = plugin.pref("metadata.protectedTerms") || "";
     titleCase.addEventListener("change", () => plugin.setPref("metadata.titleCase", titleCase.value));
     terms.addEventListener("input", () => plugin.setPref("metadata.protectedTerms", terms.value));
-    const names = { title: "标题格式", doi: "DOI 前缀", pages: "页码连接符", numbers: "卷期数字", language: "补全空语言", abbreviation: "补全空期刊缩写", conference: "会议名称与论文集标题标准化", duplicates: "手动整理时提示疑似重复数量" };
+    const names = { title: "标题格式", doi: "DOI 前缀", pages: "页码连接符", numbers: "卷期数字", language: "补全空语言", abbreviation: "补全空期刊缩写", conference: "补全会议名称（保留论文集标题）", duplicates: "手动整理时提示疑似重复数量" };
     const rules = doc.getElementById("zsr10-metadata-rules"); rules.replaceChildren();
     for (const [key, name] of Object.entries(names)) {
       const label = doc.createElementNS("http://www.w3.org/1999/xhtml", "label");

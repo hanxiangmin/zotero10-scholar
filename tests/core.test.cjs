@@ -61,6 +61,43 @@ function conferenceCatalog() {
   ])]);
 }
 
+test("official TSMC punctuation and dataset spelling share metrics without renaming the item", () => {
+  const title="IEEE Transactions on Systems Man Cybernetics-Systems";
+  const catalog=new Catalog([dataset("ccf",[ccfJournal({title,issns:[],rank:"B"})]),dataset("jcr",[jcrJournal({title,issns:["2168-2216"]})]),dataset("cas",[casJournal({title,issns:["2168-2232"]})])]);
+  const item=journal({publicationTitle:"IEEE Transactions on Systems, Man, and Cybernetics: Systems"});
+  assert.equal(catalog.lookup(item).text,"B|20.4|Q1|1区TOP");
+  assert.equal(catalog.lookup({...item,ISSN:"2168-2232"}).text,"B|20.4|Q1|1区TOP");
+  assert.equal(item.publicationTitle,"IEEE Transactions on Systems, Man, and Cybernetics: Systems");
+});
+
+test("historical SMC titles and contradictory ISSNs never inherit successor metrics", () => {
+  const catalog=new Catalog([dataset("ccf",[ccfJournal({title:"IEEE Transactions on Cybernetics",issns:[],rank:"B"})]),dataset("jcr",[jcrJournal({title:"IEEE Transactions on Cybernetics",issns:["2168-2267"]})])]);
+  const old=journal({publicationTitle:"IEEE Transactions on Systems, Man, and Cybernetics, Part B (Cybernetics)",ISSN:"1083-4419"});
+  assert.equal(catalog.lookup(old).hasData,false);
+  const conflict=catalog.lookup({...old,publicationTitle:"IEEE Transactions on Cybernetics"});
+  assert.equal(conflict.hasData,false);assert.equal(conflict.reasons.ccf,"journal-identity-conflict");
+  assert.equal(catalog.lookup(journal({publicationTitle:"IEEE Transactions on Cybernetics",ISSN:"2168-2909"})).hasData,false);
+});
+
+test("a CCF entry without ISSNs can use the same journal's verified dataset ISSNs", () => {
+  const catalog=new Catalog([dataset("ccf",[ccfJournal({issns:[]})]),dataset("jcr",[jcrJournal()])]);
+  assert.equal(catalog.lookup(journal({publicationTitle:"",ISSN})).text,"A|20.4|Q1");
+  assert.equal(catalog.lookup(journal({publicationTitle:"Different",ISSN})).provenance.ccf.matchedBy,"ISSN");
+});
+
+test("CVPR historical Computer Society editions identify the main meeting and retain track exclusions", () => {
+  const catalog=conferenceCatalog();
+  for(const proceedingsTitle of ["2009 IEEE Conference on Computer Vision and Pattern Recognition","2005 IEEE Computer Society Conference on Computer Vision and Pattern Recognition (CVPR'05)"])
+    assert.equal(catalog.lookup({itemType:"conferencePaper",proceedingsTitle}).text,"A");
+  assert.equal(catalog.lookup({itemType:"conferencePaper",proceedingsTitle:"2009 IEEE Computer Society Conference on Computer Vision and Pattern Recognition Workshops"}).hasData,false);
+});
+
+test("bibliographic acronym/year/location suffixes do not obstruct a matching full conference title", () => {
+  const catalog=conferenceCatalog();
+  assert.equal(catalog.lookup({itemType:"conferencePaper",proceedingsTitle:"2009 IEEE Computer Society Conference on Computer Vision and Pattern Recognition, CVPR2009, Miami, Florida, USA"}).text,"A");
+  assert.equal(catalog.lookup({itemType:"conferencePaper",proceedingsTitle:"Different Conference, CVPR 2009, Miami, USA"}).hasData,false);
+});
+
 function metricCatalog({ rank = null, jif = null, quartile = null, division = null } = {}) {
   const datasets = [];
   if (rank !== null) datasets.push(dataset("ccf", [ccfJournal({ rank })]));

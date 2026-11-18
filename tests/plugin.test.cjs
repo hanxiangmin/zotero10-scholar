@@ -773,7 +773,7 @@ test("automatic metadata standardizes conference names offline while rank-only u
   assert.equal(record.fields.callNumber,"B");assert.equal(record.fields.conferenceName,"MICCAI");
   state.preferences["metadata.auto"]=true;state.autoNew=false;
   state.observer.notify("add","item",[record.id]);await plugin.pendingAuto;
-  assert.equal(record.fields.conferenceName,standard);assert.equal(record.fields.proceedingsTitle,standard);
+  assert.equal(record.fields.conferenceName,standard);assert.equal(record.fields.proceedingsTitle,"MICCAI-2005");
   assert.equal(record.fields.date,"2025");assert.equal(record.fields.callNumber,"B");
   assert.equal(state.doiLookups.length,0);assert.equal(state.crossrefLookups.length,0);
 });
