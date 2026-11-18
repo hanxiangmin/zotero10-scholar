@@ -677,6 +677,20 @@ async function runSmoke(rootURI) {
     return {ICASSP:"B",CCC:"rejected",AAAI:"A"};
   });
 
+  await step("escaped-KDD-proceedings-and-ACM-label-recover-A-without-renaming", async () => {
+    await guard();
+    const paper=new Zotero.Item("conferencePaper");paper.libraryID=Zotero.Libraries.userLibraryID;
+    const book="Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery &amp; Data Mining";
+    const meeting="KDD '18: The 24th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining";
+    for(const[field,value]of Object.entries({title:"Synthetic KDD entity regression",proceedingsTitle:book,conferenceName:meeting,date:"2018",extra}))paper.setField(field,value);
+    await paper.saveTx({skipSelect:true});
+    same((await plugin.apply([paper],{silent:true})).written,1,"Native rank update committed");
+    same(paper.getField("callNumber"),"A","CCF A recovered");
+    same(paper.getField("proceedingsTitle"),book,"Original book field retained");same(paper.getField("conferenceName"),meeting,"Original meeting field retained");
+    same(paper.getField("extra"),extra,"Extra retained");
+    return {escapedAmpersand:true,acmPrefix:true,rank:"A",publicationFieldsRetained:true};
+  });
+
   await step("official-proceedings-survive-cleanup-and-native-bibtex-export", async () => {
     await guard();
     const paper=new Zotero.Item("conferencePaper");paper.libraryID=Zotero.Libraries.userLibraryID;

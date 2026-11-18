@@ -335,6 +335,29 @@ test("KDD and IJCAI report spellings match full venues and restore cleared ranks
   }
 });
 
+test("KDD ACM event prefixes and escaped ampersands identify the full main conference", () => {
+  const catalog=new Catalog([dataset("ccf",[{type:"conference",title:"ACM SIGKDD Conference on Knowledge Discovery and Data Mining",abbreviation:"SIGKDD",rank:"A"}])]);
+  for(const connector of ["&amp;","&#38;","&#x26;","&amp;amp;","&","and"]) {
+    const item={itemType:"conferencePaper",conferenceName:"KDD '18: The 24th ACM SIGKDD International Conference on Knowledge Discovery and Data Mining",proceedingsTitle:"Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery "+connector+" Data Mining"};
+    const original=structuredClone(item);assert.equal(catalog.lookup(item).text,"A",connector);assert.deepEqual(item,original);
+    for(const conferenceName of ["KDD","SIGKDD","KDD2018","KDD '18"]) assert.equal(catalog.lookup({...item,conferenceName}).text,"A",conferenceName);
+  }
+});
+
+test("entity decoding keeps track exclusions and full-name conflict checks", () => {
+  const catalog=new Catalog([dataset("ccf",[{type:"conference",title:"ACM SIGKDD Conference on Knowledge Discovery and Data Mining",abbreviation:"SIGKDD",rank:"A"}])]);
+  const item={itemType:"conferencePaper",conferenceName:"KDD",proceedingsTitle:"Proceedings of the 24th ACM SIGKDD International Conference on Knowledge Discovery &amp; Data Mining"};
+  for(const ending of [" Workshops"," Work&#115;hops"," Findings"," Companion"])
+    assert.equal(catalog.lookup({...item,proceedingsTitle:item.proceedingsTitle+ending}).reasons.ccf,"excluded-conference-track");
+  assert.equal(catalog.lookup({...item,conferenceName:"KDD '18: A Different Conference"}).hasData,false);
+});
+
+test("title entity normalization is bounded and tolerates malformed code points", () => {
+  const normalize=require("../src/core.js").normalizeTitle;
+  assert.equal(normalize("Knowledge Discovery &amp; Data Mining"),normalize("Knowledge Discovery & Data Mining"));
+  assert.doesNotThrow(()=>normalize("&#0; &#x110000; &#xD800; &constructor; &unknown;"));
+});
+
 test("full conference matches cannot hide conflicting fields or remove subject words", () => {
   const catalog = conferenceCatalog();
   for (const proceedingsTitle of [

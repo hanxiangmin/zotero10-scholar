@@ -4,8 +4,21 @@
   const MISSING = "—";
   const EXCLUDED_CONFERENCE = /\b(workshops?|findings|short\s+papers?|demo(?:nstration)?s?|technical\s+briefs?|companion|posters?|doctoral\s+(?:consortium|symposium)|extended\s+abstracts?)\b/i;
 
+  function decodeEntities(value) {
+    const named = {amp:"&",nbsp:" ",quot:'"',apos:"'",lt:"<",gt:">",ndash:"–",mdash:"—",lsquo:"‘",rsquo:"’",ldquo:"“",rdquo:"”"};
+    // Bibliographic sources sometimes escape an entity twice. Bound decoding
+    // and keep unknown/invalid entities; no HTML is rendered or executed.
+    let result = String(value || "");
+    for (let pass=0;pass<2;pass++) result=result.replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi,(entity,key)=>{
+      if (key[0]!=="#") return Object.hasOwn(named,key.toLowerCase()) ? named[key.toLowerCase()] : entity;
+      const hex=key[1].toLowerCase()==="x",code=parseInt(key.slice(hex?2:1),hex?16:10);
+      return code>0 && code<=0x10ffff && !(code>=0xd800 && code<=0xdfff) ? String.fromCodePoint(code) : entity;
+    });
+    return result;
+  }
+
   function normalizeTitle(value) {
-    return String(value || "").normalize("NFKD").replace(/\p{M}/gu, "")
+    return decodeEntities(value).normalize("NFKD").replace(/\p{M}/gu, "")
       .toLowerCase().replace(/&/g, " and ").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
   }
 
@@ -171,6 +184,14 @@
     const ordinal = "(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth)";
     let name = normalizeTitle(value).replace(new RegExp("\\b(" + ordinal + ")(?=international\\b)", "g"), "$1 ");
     const short = normalizeTitle(abbreviation);
+    // ACM event labels precede the full title, e.g. KDD '18: The 24th ... .
+    // The remaining full name still has to match this particular conference.
+    const aliases = short === "sigkdd" ? [short,"kdd"] : short === "neurips" ? [short,"nips"] : [short];
+    for (const alias of aliases.filter(Boolean)) {
+      name=name.replace(new RegExp("^"+alias+"(?=(?:19|20)\\d{2}\\b|\\d{2}\\b)"),alias+" ");
+      if (new RegExp("^"+alias+"(?: (?:(?:19|20)\\d{2}|\\d{2}))?$").test(name)) name=short;
+      else name=name.replace(new RegExp("^"+alias+" (?:(?:19|20)\\d{2}|\\d{2}) "),"");
+    }
     // DBLP's full proceedings titles may append acronym, year and location.
     // Strip that bibliographic suffix only after an explicit acronym/year pair;
     // the remaining full title must still agree (CCC collisions stay rejected).
@@ -208,7 +229,7 @@
     if (!index) return { record: null, reason: "no-dataset" };
     const names = [item.conferenceName, item.proceedingsTitle].filter(Boolean);
     // A parent conference name does not turn a Workshop/Findings paper into a full paper.
-    if (names.some(n => EXCLUDED_CONFERENCE.test(n))) return { record: null, reason: "excluded-conference-track" };
+    if (names.some(n => EXCLUDED_CONFERENCE.test(normalizeTitle(n)))) return { record: null, reason: "excluded-conference-track" };
     const candidates = [], acronyms = [];
     for (const record of index.dataset.records) {
       if (record.type !== "conference") continue;

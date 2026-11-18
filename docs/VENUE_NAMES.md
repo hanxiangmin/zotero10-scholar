@@ -3,6 +3,7 @@
 出版字段保存正式名称，指标匹配在内部进行，不改写出版字段。
 
 - 期刊保留发表时的官方刊名。匹配时兼容大小写、标点、`&` / `and`、经过核实的名称别名和印刷/电子 ISSN。
+- 匹配会解码 `&amp;`、`&#38;` 等来源字符实体，兼容 `KDD '18: …` 等 ACM 名称前缀；原出版字段保持不变。
 - 会议名称仅在空缺或只有简称时补全。论文集标题保留年份、卷次及 Workshop 等必要区别。
 - 例如 NeurIPS 的会议名可为 `Conference on Neural Information Processing Systems`，2021 年论文集为 `Advances in Neural Information Processing Systems 34`。二者分别保存在对应字段。
 - CCF、JCR 和中科院表分别匹配；同刊的已确认 ISSN 可在表之间关联。标题和 ISSN 指向不同刊物时跳过，不猜测。

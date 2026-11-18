@@ -1,6 +1,6 @@
 {
   "name": "zotero10-scholar",
-  "version": "3.3.1",
+  "version": "3.3.2",
   "license": "MIT",
   "private": true,
   "description": "Zotero 10：元数据整理、DOI 优先与无 DOI 联网核对、CCF/JCR/2025 中科院分区；更新后展示修改对照。",
