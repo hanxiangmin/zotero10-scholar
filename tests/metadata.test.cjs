@@ -303,3 +303,79 @@ test("preprints match their DataCite version and repair line-break titles while 
   assert.equal(S.arxivDOI({...before,url:"https://arxiv.org/pdf/2106.13264v4.pdf"}),record.attributes.doi);
   assert.equal(S.preprintPlan({...before,DOI:"bad DOI"},[record],{},null).reason,"invalid-doi");
 });
+
+
+const Publications = require('../src/publications.js');
+test('legacy SICI DOIs remain usable while unrelated angle-bracket values are rejected', () => {
+  const doi='10.1002/(SICI)1097-0258(19970228)16:4<385::AID-SIM380>3.0.CO;2-3';
+  assert.equal(M.doiKey(doi),doi.toLowerCase());
+  assert.equal(M.doiKey('10.1234/<script>'),'');
+});
+test('publication completion retains existing editor and contributor roles when the source returns only authors', () => {
+  const before = auditItem({creators:[{creatorType:'editor',firstName:'Alice',lastName:'Editor'}, {creatorType:'author',firstName:'Jane',lastName:'Smith'}]});
+  const result = Publications.plan(before,Publications.crossrefSource(formalRecord()),{},null);
+  assert.ok(result.creators.some(person => person.creatorType === 'editor' && person.lastName === 'Editor'));
+  assert.equal(result.creators.filter(person => person.creatorType === 'author').length,2);
+});
+test('publisher citation metadata separates the formal DOI from arXiv history', () => {
+  const html='<meta name="citation_arxiv_id" content="2310.11829"><meta name="citation_title" content="Graph Foundation Models"><meta name="citation_doi" content="10.1109/TPAMI.2025.3548729"><meta name="citation_date" content="2023/10/18"><meta name="citation_volume" content="47"><meta name="citation_issue" content="6"><meta name="citation_firstpage" content="5023"><meta name="citation_lastpage" content="5044">';
+  const result=Publications.publisherMetadata(html);
+  assert.equal(result.arxivID,'2310.11829');assert.equal(result.DOI,'10.1109/TPAMI.2025.3548729');
+  assert.equal(result.pages,'5023–5044');assert.equal(result.volume,'47');assert.equal(result.date,undefined);
+});
+test('formal-version lookup excludes CoRR records mislabeled as articles', () => {
+  const row = {paper:'https://dblp.org/rec/journals/corr/SimonyanZ14a',title:'Very Deep Convolutional Networks for Large-Scale Image Recognition.',year:'2015',venue:'ICLR',doi:'https://doi.org/10.48550/arxiv.1409.1556',name:'Karen Simonyan',ordinal:'1'};
+  const bindings = [Object.fromEntries(Object.entries(row).map(([key,value]) => [key,{value}]))];
+  assert.deepEqual(Publications.dblpSources(bindings),[]);
+});
+const formalRecord = overrides => ({DOI:'10.1234/final',type:'journal-article',title:['A complete study of synthetic learning models'],
+ author:[{given:'Jane',family:'Smith'},{given:'Robert',family:'Jones'}],'container-title':['Verified Journal'],volume:'12',issue:'3',page:'101-119',
+ 'published-print':{'date-parts':[[2026,3]]},'published-online':{'date-parts':[[2025,11]]},...overrides});
+const auditItem = overrides => ({itemType:'journalArticle',title:'A complete study of synthetic learning models',DOI:'10.1234/final',date:'2025',
+ publicationTitle:'Verified Journal',volume:'',issue:'',pages:'',creators:[{creatorType:'author',firstName:'Jane',lastName:'Smith'}],...overrides});
+
+test('publication audit fills issue metadata and article numbers from verified source fields', () => {
+ const source=Publications.crossrefSource(formalRecord());
+ const plan=Publications.plan(auditItem(),source,{},null);
+ assert.equal(plan.fields.volume,'12');assert.equal(plan.fields.issue,'3');assert.equal(plan.fields.pages,'101-119');assert.equal(plan.fields.date,'2026-03');
+ assert.equal(Publications.crossrefSource(formalRecord({page:undefined,'article-number':'e12345'})).pages,'e12345');
+ assert.equal(Publications.plan(auditItem({volume:'12',issue:'3',pages:'101-119'}),{...source,volume:'',issue:'',pages:''},{},null).fields.pages,undefined);
+});
+
+test('published-version promotion clears a preprint DOI for a no-DOI conference and retains source provenance', () => {
+ const before=auditItem({itemType:'preprint',DOI:'10.48550/arxiv.1234.56789',pages:'1-10'});
+ const source={...Publications.crossrefSource(formalRecord()),itemType:'conferencePaper',DOI:'',publicationTitle:undefined,proceedingsTitle:'Conference X',source:'DBLP',sourceURL:'https://dblp.org/rec/conf/test/Test26'};
+ const plan=Publications.plan(before,source,{},null);
+ assert.equal(plan.itemType,'conferencePaper');assert.equal(plan.fields.DOI,'');assert.equal(plan.promoted,true);assert.equal(plan.source,'DBLP');
+ assert.equal(plan.fields.proceedingsTitle,'Conference X');assert.equal(plan.fields.extra,undefined);assert.equal(plan.fields.callNumber,undefined);
+});
+
+test('publication audit rejects a populated DOI pointing to a different paper before title fallback', async () => {
+ const calls=[];
+ const client=new Publications.Client(async(kind,key)=>{
+  calls.push(kind);
+  return kind==='crossref' ? {message:formalRecord({title:['A completely different research paper']})} : {message:{items:[formalRecord({DOI:'10.1234/correct'})]}};
+ });
+ const found=await client.resolve(auditItem());
+ assert.equal(found.source.DOI,'10.1234/correct');assert.deepEqual(calls,['crossref','crossref-search']);
+});
+
+test('publication audit falls back after an unresolvable DOI and never accepts different-author or ambiguous hits', async () => {
+ const client=new Publications.Client(async(kind)=>{
+  if(kind==='crossref')throw new Error('404');
+  if(kind==='crossref-search')return {message:{items:[formalRecord(),formalRecord({DOI:'10.1234/second'})]}};
+  return {results:{bindings:[]}};
+ });
+ assert.equal((await client.resolve(auditItem())).reason,'search-ambiguous');
+ assert.equal(Publications.agrees(auditItem(),Publications.crossrefSource(formalRecord({author:[{given:'Other',family:'Person'}]}))),false);
+});
+
+test('publication audit keeps a preprint when no formal version is available and distinguishes cancellation', async () => {
+ const record={attributes:{doi:'10.48550/arxiv.2106.13264',types:{resourceTypeGeneral:'Preprint'},publicationYear:2021,
+ titles:[{title:'A complete study of synthetic learning models'}],creators:[{familyName:'Smith',givenName:'Jane'}],url:'https://arxiv.org/abs/2106.13264'}};
+ const client=new Publications.Client(async kind=>kind==='crossref-search'?{message:{items:[]}}:kind==='dblp'?{results:{bindings:[]}}:{data:record});
+ const found=await client.resolve(auditItem({itemType:'preprint',DOI:record.attributes.doi}));
+ assert.equal(found.source.itemType,'preprint');assert.equal(found.source.date,'2021');
+ const cancelled=new Publications.Client(async()=>({}),()=>true);
+ await assert.rejects(cancelled.resolve(auditItem()),/audit-cancelled/);
+});

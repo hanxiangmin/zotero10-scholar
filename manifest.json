@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Zotero 10 Scholar Rank",
-  "version": "3.2.1",
+  "version": "3.3.0",
   "description": "Zotero 10：元数据整理、联网核对、CCF/JCR/中科院分区及手动下载全文 PDF；显示逐项处理结果。",
   "author": "Zotero 10 Scholar Rank contributors",
   "homepage_url": "https://github.com/hanxiangmin/zotero10-scholar",

@@ -52,3 +52,5 @@ python scripts/prepare-smoke.py --auto-close
 大量文献、跨设备同步、不同操作系统及所有第三方插件组合尚不在完整实测范围内。
 
 3.2.1 的独立实机步骤还联网核对 TransMIL 的 DBLP 会议记录、标准 NeurIPS 名称和 CCF A，以及 AllSet 预印本的 DataCite 标题、arXiv DOI、2021 年份和重复更新。
+
+3.3.0 新增全库范围加载、正式版本筛选、改名与关联 DOI、SICI 标识、编辑者保留、停止后保留已完成修改等回归。实机检查包含预印本原地转换、原条目键及文件夹/子附件/笔记、原生撤销/重做，以及 AllSet 真实正式版查找。

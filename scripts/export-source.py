@@ -41,6 +41,7 @@ FILES = (
     "src/core.js",
     "src/metadata.js",
     "src/search.js",
+    "src/publications.js",
     "src/reports.js",
     "src/attachments.js",
     "src/plugin.js",

@@ -516,6 +516,69 @@ async function runSmoke(rootURI) {
     } finally {plugin.setPref("autoNew",false);}
   });
 
+  await step("native-library-audit-scope-loads-every-collection-without-children", async () => {
+    const items = await plugin.allPaperItems();
+    check(items.length >= 3,"Library scope includes fixtures");
+    check(items.every(item=>item.isRegularItem() && !item.deleted),"Only regular non-deleted items");
+    same(new Set(items.map(item=>item.id)).size,items.length,"One entry per item across collections");
+    for(const item of items) plugin.snapshot(item);
+    return {allItemsLoaded:items.length,deduplicated:true,fieldsLoaded:true};
+  });
+
+  await step("native-audit-promotes-a-preprint-in-place-with-collections-children-and-undo", async () => {
+    await guard();
+    const record = new Zotero.Item("preprint");
+    record.libraryID = Zotero.Libraries.userLibraryID;
+    record.setField("title","A complete study of synthetic learning models");
+    record.setField("DOI","10.48550/arxiv.1234.56789");
+    record.setField("date","2025");
+    record.setField("extra",extra);
+    record.setCreators([{creatorType:"author",firstName:"Jane",lastName:"Smith"}]);
+    await record.saveTx({skipSelect:true});
+    const collection = new Zotero.Collection();
+    collection.libraryID = Zotero.Libraries.userLibraryID;
+    collection.name = "Audit conversion fixture";
+    await collection.saveTx();
+    record.addToCollection(collection.id);await record.saveTx();
+    const note = new Zotero.Item("note");note.parentID=record.id;note.setNote("Preserve this note");await note.saveTx();
+    const attachment = await Zotero.Attachments.linkFromURL({url:"https://example.invalid/audit-fixture.pdf",parentItemID:record.id,title:"Preserve attachment"});
+    const originalKey = record.key, before = await snapshot(record), oldRequest = plugin.fetchAuditJSON;
+    plugin.fetchAuditJSON = async kind => {
+      if (kind === "datacite") return {data:[]};
+      if (kind !== "crossref-search") throw new Error("Unexpected fixture lookup");
+      return {message:{items:[{DOI:"10.1234/final-fixture",type:"journal-article",title:[record.getField("title")],
+        author:[{given:"Jane",family:"Smith"}],"container-title":["Verified Fixture Journal"],volume:"12",issue:"3",page:"101-119",
+        "published-print":{"date-parts":[[2026,3]]},"published-online":{"date-parts":[[2025,11]]}}]}};
+    };
+    try {
+      Zotero.UndoHistory.clear();
+      const report = await plugin.auditItems([record,record],{silent:true});
+      same(report.counts.checked,1,"Deduplicated record");same(report.counts.promoted,1,"One published version");
+      same(record.itemType,"journalArticle","Native type conversion");same(record.key,originalKey,"Stable item key");
+      same(record.getField("volume"),"12","Final volume");same(record.getField("pages"),"101-119","Final pages");
+      same(record.getField("date"),"2026-03","Issue date");same(record.getField("extra"),extra,"Original Extra");
+      same(record.getCollections(),[collection.id],"Original collection");same(Zotero.Items.get(note.id).parentID,record.id,"Original note parent");
+      same(Zotero.Items.get(attachment.id).parentID,record.id,"Original attachment parent");
+      same(await Zotero.UndoHistory.undo(),true,"Undo conversion");same(await snapshot(record),before,"Native undo restores preprint");
+      same(await Zotero.UndoHistory.redo(),true,"Redo conversion");same(record.itemType,"journalArticle","Redo final type");
+      return {lookupStubbed:true,promoted:1,stableKey:true,collectionsAndChildren:true,undoRedo:true};
+    } finally {plugin.fetchAuditJSON=oldRequest;}
+  });
+
+  await step("live-audit-prefers-AllSet-published-conference-over-preprint", async () => {
+    await guard();
+    const record = new Zotero.Item("preprint");record.libraryID=Zotero.Libraries.userLibraryID;
+    record.setField("title","You are AllSet: A Multiset Function Framework for Hypergraph Neural Networks");
+    record.setField("DOI","10.48550/arxiv.2106.13264");record.setField("date","2021");
+    record.setCreators([{creatorType:"author",firstName:"Eli",lastName:"Chien"},{creatorType:"author",firstName:"Chao",lastName:"Pan"}]);
+    await record.saveTx({skipSelect:true});
+    const report=await plugin.auditItems([record],{silent:true});
+    same(report.counts.promoted,1,"Live final-version promotion");same(record.itemType,"conferencePaper","Published conference type");
+    same(record.getField("conferenceName"),"International Conference on Learning Representations","ICLR official name");
+    same(record.getField("date"),"2022","Conference year");same(record.getField("DOI"),"","No preprint DOI on conference version");
+    return {liveNetwork:true,source:report.outcomes[0].source,finalYear:record.getField("date"),finalType:record.itemType};
+  });
+
   await step("live-native-DOI-updates-existing-item-without-creating-duplicates", async () => {
     const record=await create({title:"Replace this title from DOI",DOI:"10.1038/nature14539",callNumber:"Keep metrics",extra});
     const before=(await Zotero.Items.getAll(Zotero.Libraries.userLibraryID)).length;

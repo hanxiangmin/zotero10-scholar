@@ -1,13 +1,14 @@
 (function (root) {
   "use strict";
   const LABELS = {
-    title: "标题", DOI: "DOI", date: "日期", creators: "作者及贡献者", publicationTitle: "期刊名称",
+    itemType: "文献类型", title: "标题", DOI: "DOI", date: "日期", creators: "作者及贡献者", publicationTitle: "期刊名称",
     proceedingsTitle: "会议论文集标题", conferenceName: "会议名称", journalAbbreviation: "期刊缩写",
     pages: "页码", volume: "卷次", issue: "期号", language: "语言", ISSN: "ISSN", url: "网址",
     abstractNote: "摘要", publisher: "出版者", place: "出版地", callNumber: "索书号（分区指标）", pdf: "PDF 全文附件"
   };
   const ROLES = { author: "作者", editor: "编辑", contributor: "贡献者", translator: "译者" };
   function valueText(field, value) {
+    if (field === "itemType") return ({journalArticle:"期刊文章",conferencePaper:"会议论文",preprint:"预印本",bookSection:"图书章节",report:"报告",thesis:"学位论文"})[value] || String(value);
     if (field === "creators") return (value || []).map(creator => {
       const name = creator.name || [creator.lastName, creator.firstName].filter(Boolean).join(", ");
       return `${ROLES[creator.creatorType] || creator.creatorType || "贡献者"}：${name}`;
@@ -32,7 +33,7 @@
       if (!["written", "downloaded"].includes(key) && count) summary.push(`${reasons[key] || key}：${count}`);
     }
     return { operation, counts: { ...counts }, summary, items, download,
-      outcomes: outcomes.filter(row => row.reason !== "downloaded").map(row => ({ ...row, message: reasons[row.reason] || row.reason })),
+      outcomes: outcomes.filter(row => row.reason !== "downloaded").map(row => ({ ...row, message: row.message || reasons[row.reason] || row.reason })),
       time: new Date().toLocaleTimeString("zh-CN", { hour12: false }) };
   }
   function toText(report) {

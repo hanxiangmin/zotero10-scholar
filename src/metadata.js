@@ -34,7 +34,7 @@
     let candidate = original.trim().replace(/^(?:doi\s*:\s*|https?:\/\/(?:dx\.)?doi\.org\/)/i, "");
     if (/^https?:/i.test(original.trim()) && /[?#]/.test(candidate)) return original;
     // DOI suffixes may contain punctuation and parentheses; do not strip them.
-    if (/^10\.\d{4,9}\/\S+$/i.test(candidate) && !/[<>"\u0000-\u001f]/.test(candidate)) return candidate;
+    if (/^10\.\d{4,9}\/\S+$/i.test(candidate) && safeDOI(candidate)) return candidate;
     return original;
   }
 
@@ -136,7 +136,12 @@
   const DOI_FIELDS = Object.freeze([...new Set([...FIELDS, "publicationTitle", "date", "ISSN", "url", "abstractNote", "proceedingsTitle", "conferenceName", "publisher", "place"])]);
   function doiKey(value) {
     const doi = cleanDOI(value);
-    return /^10\.\d{4,9}\/\S+$/.test(doi) && !/[<>"\u0000-\u001f]/.test(doi) ? doi.toLowerCase() : "";
+    return /^10\.\d{4,9}\/\S+$/.test(doi) && safeDOI(doi) ? doi.toLowerCase() : "";
+  }
+  function safeDOI(value) {
+    if (/["\u0000-\u001f]/.test(value)) return false;
+    // Older Wiley SICI identifiers legitimately contain an angle-bracket pair.
+    return !/[<>]/.test(value) || /\(sici\)[^<>]*<[^<>\s]+>[^<>]*$/i.test(value);
   }
   function normalizeCreators(values) {
     if (!Array.isArray(values) || !values.length || values.length > 10000) return null;

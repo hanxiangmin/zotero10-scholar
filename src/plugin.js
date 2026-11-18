@@ -3,6 +3,7 @@
   const { Catalog, planUpdate } = root.ScholarCore;
   const Metadata = root.ScholarMetadata;
   const Search = root.ScholarSearch;
+  const Publications = root.ScholarPublications;
   const Reports = root.ScholarReports;
   const Attachments = root.ScholarAttachments;
   const PREF = "extensions.zotero10scholar.";
@@ -29,7 +30,9 @@
     "pdf-access-limited": "需要登录、验证或网站限流，已停止本批下载",
     "pdf-too-large": "文件超过 50 MB，需手动下载", "pdf-cancelled": "下载已停止",
     "pdf-not-attempted": "本批已停止，未尝试下载", "pdf-save-failed": "附件保存失败",
-    "pdf-unavailable": "当前 Zotero 缺少所需附件接口"
+    "pdf-unavailable": "当前 Zotero 缺少所需附件接口",
+    "checked": "已核对", "promoted": "已更新为正式发表版本", "audit-cancelled": "已停止核对",
+    "source-incomplete": "出版来源未提供全部卷期页信息", "verified": "信息已核对", "audit-failed": "本条核对或保存失败"
   };
 
   const plugin = {
@@ -109,6 +112,7 @@
     async stop() {
       this.active = false;
       this.cancelDownload();
+      this.cancelAudit();
       if (this.observer != null) Zotero.Notifier.unregisterObserver(this.observer);
       if (this.currentOperation) await this.currentOperation;
       await this.pendingAuto;
@@ -429,15 +433,17 @@
               counts["manually-edited"] = (counts["manually-edited"] || 0) + 1; continue;
             }
             const fields = plan.fields || { callNumber: plan.callNumber };
+            const targetType = plan.itemType ? Zotero.ItemTypes.getID(plan.itemType) : item.itemTypeID;
             if (Object.entries(fields).some(([field, value]) => typeof value !== "string" || ![...Metadata.DOI_FIELDS, "callNumber"].includes(field)
-                || !Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), item.itemTypeID))) {
+                || !Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), targetType))) {
               throw new Error("条目不支持待更新字段，已回滚本批更新。");
             }
             touched.push(item);
+            if (plan.itemType) item.setType(targetType);
             for (const [field, value] of Object.entries(fields)) item.setField(field, value);
             if (plan.creators) item.setCreators(plan.creators);
             await item.save({ skipSelect: true });
-            const changed = Reports.changedItem(before, this.snapshot(item), [...Object.keys(fields), ...(plan.creators ? ["creators"] : [])]);
+            const changed = Reports.changedItem(before, this.snapshot(item), [...Object.keys(fields), ...(plan.itemType ? ["itemType"] : []), ...(plan.creators ? ["creators"] : [])]);
             if (changed) { saved.push(changed); written++; }
           }
           if (!this.active) throw new Error("插件已停用，已回滚本批更新。");
@@ -480,6 +486,100 @@
           new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("DOI 查询超时。")), 45000); })
         ]);
       } finally { clearTimeout(timer); }
+    },
+
+    cancelAudit() { if (this.auditTask) this.auditTask.cancelled = true; },
+
+    async fetchAuditJSON(kind, key, url) {
+      const response = await Zotero.HTTP.request("GET", url, {responseType:kind === "publisher" ? "text" : "json", timeout:15000,
+        errorDelayMax:0, noRetryOnThrottle:true});
+      return response.response;
+    },
+
+    async allPaperItems() {
+      const items = [];
+      for (const library of Zotero.Libraries.getAll()) {
+        if (!library.editable || !["user", "group"].includes(library.libraryType)) continue;
+        const records = await Zotero.Items.getAll(library.libraryID, true, false);
+        await Zotero.Items.loadDataTypes(records,["itemData","creators","collections","childItems"]);
+        items.push(...records.filter(item => item.isRegularItem() && !item.deleted && !item.isFeedItem));
+      }
+      return [...new Map(items.map(item => [item.id,item])).values()];
+    },
+
+    async auditLibrary(options = {}) {
+      return this.auditItems(await this.allPaperItems(), options);
+    },
+
+    async auditItems(items, {win = this.window(), silent = false, preferPublished = true, onProgress} = {}) {
+      if (!this.active) return;
+      if (this.busy) { this.alert("上一批处理尚未结束，请稍后再试。",win); return; }
+      const finish = this.beginOperation(), task = {cancelled:false};
+      this.auditTask = task;
+      const client = new Publications.Client((kind,key,url) => this.fetchAuditJSON(kind,key,url), () => task.cancelled || !this.active);
+      const report = {operation:"文献核对与补全", startedAt:new Date().toISOString(), counts:{checked:0,written:0,promoted:0}, items:[], outcomes:[]};
+      this.lastAudit = report;
+      const selected = [...new Map(items.filter(Boolean).map(item => [item.id,item])).values()];
+      try {
+        for (const [index,item] of selected.entries()) {
+          if (task.cancelled || !this.active) break;
+          this.status = `核对文献 ${index + 1}/${selected.length} · ${item.getField("title")}`;
+          const outcome = {id:item.id,key:item.key,libraryID:item.libraryID,title:item.getField("title"),reason:"verified"};
+          try {
+            if (!["journalArticle","conferencePaper","preprint","bookSection","report","thesis"].includes(item.itemType)) {
+              outcome.reason = "unsupported-type";
+            } else if (!item.isEditable() || item.deleted || item.isFeedItem) {
+              outcome.reason = "read-only";
+            } else {
+              const before = this.snapshot(item);
+              outcome.missingBefore = Publications.missing(before);
+              const match = await client.resolve(before,{preferPublished});
+              if (task.cancelled || !this.active) break;
+              outcome.reason = match.reason;
+              outcome.errors = match.errors;
+              if (match.source) {
+                const plan = Publications.plan(before,match.source,this.metadataOptions(),this.catalog);
+                const targetType = plan.itemType ? Zotero.ItemTypes.getID(plan.itemType) : item.itemTypeID;
+                if (plan.creators) plan.creators = plan.creators.filter(person => Zotero.CreatorTypes.isValidForItemType(Zotero.CreatorTypes.getID(person.creatorType),targetType));
+                for (const field of Object.keys(plan.fields)) {
+                  if (!Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field),targetType)) delete plan.fields[field];
+                }
+                outcome.source = match.source.source;
+                outcome.sourceURL = match.source.sourceURL;
+                outcome.missingAfter = plan.missing;
+                outcome.sourceMissing = plan.sourceMissing;
+                outcome.dateUnverified = plan.dateUnverified;
+                if (plan.action === "write") {
+                  const counts = {}, saved = await this.saveChanges([{item,before,plan}],counts);
+                  report.items.push(...saved);
+                  report.counts.written += counts.written || 0;
+                  if (saved.length && plan.promoted) report.counts.promoted++;
+                  outcome.reason = saved.length ? "verified" : Object.keys(counts).find(key => key !== "written") || "unchanged";
+                }
+                const gaps = (outcome.sourceMissing || []).filter(field => ["publicationTitle","proceedingsTitle","volume","issue","pages"].includes(field));
+                outcome.message = (REASONS[outcome.reason] || outcome.reason) + " · 来源 " + outcome.source
+                  + (gaps.length ? "\n来源未提供 " + gaps.join("、") : "");
+              }
+            }
+          } catch (error) {
+            if (task.cancelled || !this.active) break;
+            outcome.reason = "audit-failed";
+            outcome.error = String(error.message || error);
+            Zotero.logError(error);
+          }
+          report.counts.checked++;
+          report.outcomes.push(outcome);
+          if (onProgress) await onProgress(report);
+          await Zotero.Promise.delay(250);
+        }
+        report.cancelled = task.cancelled;
+        report.total = selected.length;
+        report.completedAt = new Date().toISOString();
+        if (task.cancelled) report.counts["audit-cancelled"] = 1;
+        if (this.active) this.showResult(report.counts,win,report.items,{operation:report.operation,silent,outcomes:report.outcomes});
+        if (onProgress) await onProgress(report);
+        return report;
+      } finally { this.auditTask = null; finish(); }
     },
 
     async lookupTitle(query) {

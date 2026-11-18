@@ -11,6 +11,7 @@ const Core = require("../src/core.js");
 const Metadata = require("../src/metadata.js");
 const Reports = require("../src/reports.js");
 const Search = require("../src/search.js");
+const Publications = require("../src/publications.js");
 const Attachments = require("../src/attachments.js");
 
 const PLUGIN_CODE = fs.readFileSync(path.join(__dirname, "../src/plugin.js"), "utf8");
@@ -223,7 +224,7 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     }
   };
   const scope = {
-    ScholarCore: Core, ScholarMetadata: Metadata, ScholarSearch: Search, ScholarReports: Reports, ScholarAttachments: Attachments, Zotero, IOUtils, clearTimeout, TextDecoder,
+    ScholarCore: Core, ScholarMetadata: Metadata, ScholarSearch: Search, ScholarPublications: Publications, ScholarReports: Reports, ScholarAttachments: Attachments, Zotero, IOUtils, clearTimeout, TextDecoder,
     setTimeout: (callback, ms) => setTimeout(callback, fastTimeout && ms === 45000 ? 1 : ms),
     PathUtils: { join: (...parts) => parts.join("/") },
     ChromeUtils: { importESModule: () => ({ FilePicker }) },
@@ -1008,4 +1009,30 @@ test("a no-DOI conference reaches DBLP only after Crossref has no matching recor
   assert.equal((await plugin.updateByDOI([record],{silent:true})).written,1);
   assert.equal(record.fields.proceedingsTitle,"NeurIPS");assert.equal(record.fields.DOI,"");
   assert.equal(state.providerLookups.length,1);assert.equal(state.titleLookups.length,1);assert.equal(state.doiLookups.length,0);
+});
+
+
+test('the manual audit fills a selected paper, deduplicates selection and preserves an ambiguous item', async () => {
+ const {plugin,state,item}=await harness();
+ const record=item(130,{title:'A complete study of synthetic learning models',DOI:'10.1234/final',date:'2025',
+  creators:[{creatorType:'author',firstName:'Jane',lastName:'Smith'}]});
+ const unknown=item(131,{title:'An unknown study without any valid source',DOI:'',creators:[]});
+ plugin.fetchAuditJSON=async(kind)=>kind==='crossref'?{message:{DOI:'10.1234/final',type:'journal-article',title:[record.fields.title],
+  author:[{given:'Jane',family:'Smith'}],'container-title':['Example Journal'],volume:'7',issue:'2',page:'15-27','published-print':{'date-parts':[[2026]]}}}
+  :kind==='crossref-search'?{message:{items:[]}}:{results:{bindings:[]}};
+ const result=await plugin.auditItems([record,record,unknown],{silent:true});
+ assert.equal(result.counts.checked,2);assert.equal(result.counts.written,1);assert.equal(record.fields.volume,'7');
+ assert.equal(record.fields.pages,'15-27');assert.equal(record.fields.extra,'User note');assert.equal(result.outcomes[1].reason,'search-no-match');
+ assert.equal(plugin.auditTask,null);
+});
+
+test('cancelling an audit retains completed items and prevents the next paper from being updated', async () => {
+ const {plugin,item}=await harness();
+ const record=item(132,{title:'A complete study of synthetic learning models',DOI:'10.1234/final',date:'2025',creators:[{creatorType:'author',firstName:'Jane',lastName:'Smith'}]});
+ const next=item(133,{...record.fields});
+ plugin.fetchAuditJSON=async()=>({message:{DOI:'10.1234/final',type:'journal-article',title:[record.fields.title],author:[{given:'Jane',family:'Smith'}],
+  'container-title':['Example Journal'],volume:'8','published-print':{'date-parts':[[2026]]}}});
+ const result=await plugin.auditItems([record,next],{silent:true,onProgress:()=>plugin.cancelAudit()});
+ assert.equal(result.counts.checked,1);assert.equal(result.counts.written,1);assert.equal(result.cancelled,true);
+ assert.equal(record.fields.volume,'8');assert.equal(next.fields.volume,undefined);
 });

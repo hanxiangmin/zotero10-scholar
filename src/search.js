@@ -248,7 +248,7 @@ SELECT ?paper ?title ?year ?venue ?url ?name ?ordinal WHERE {
     return verifiedPlan(item,[...found.values()][0],options,catalog);
   }
 
-  const api = { query, select, resolvedPlan, conferenceQuery, conferenceRecords, conferencePlan,
+  const api = { query, select, resolvedPlan, titleKey, authorMatch, crossrefIdentity, conferenceQuery, conferenceRecords, conferencePlan,
     arxivDOI, preprintQuery, dataCiteSource, preprintPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScholarSearch = api;

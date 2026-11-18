@@ -19,6 +19,16 @@
     <description>下载全文 PDF 仅手动执行：只补全所选文献缺失的全文，已有 PDF / EPUB（包括待同步文件）不重复下载，不替换批注。通过 DOI、论文网址及开放获取来源查找；不访问 Google 学术，不使用自定义下载源。遇到登录、验证码或限流即停止本批处理。仅支持正文 PDF，不批量下载补充材料。</description>
   </groupbox>
   <groupbox>
+    <label><html:h3>文献核对与补全</html:h3></label>
+    <description>核对出版物、日期、卷期、页码和 DOI。优先使用正式发表版本，同一文献在多个文件夹中只处理一次。完成后展示逐字段修改及未能补全的原因。</description>
+    <html:label><html:input id="zsr10-prefer-published" type="checkbox" checked="checked"/> 优先使用正式发表版本</html:label>
+    <html:div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">
+      <html:button id="zsr10-audit-selected">核对并补全所选文献</html:button>
+      <html:button id="zsr10-audit-library">核对并补全全部文献库</html:button>
+      <html:button id="zsr10-cancel-audit" hidden="hidden">停止核对</html:button>
+    </html:div>
+  </groupbox>
+  <groupbox>
     <label><html:h3>自动处理</html:h3></label>
     <html:label style="margin:8px 0"><html:input id="zsr10-metadata-auto" type="checkbox"/> 新增条目时自动整理元数据</html:label>
     <html:label style="margin:8px 0"><html:input id="zsr10-auto-new" type="checkbox"/> 新增条目时自动更新分区指标</html:label>

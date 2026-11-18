@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 FILES = [
     "manifest.json", "bootstrap.js", "prefs.js", "prefs.xhtml", "prefs-pane.js",
     "src/core.js", "src/plugin.js",
-    "src/metadata.js", "src/search.js", "src/reports.js", "src/attachments.js", "results.xhtml", "results.js",
+    "src/metadata.js", "src/search.js", "src/publications.js", "src/reports.js", "src/attachments.js", "results.xhtml", "results.js",
     "locale/en-US/zotero10-scholar.ftl", "locale/zh-CN/zotero10-scholar.ftl",
     "assets/icon.svg", "LICENSE", "NOTICE.md", "data/README.md"
 ]
