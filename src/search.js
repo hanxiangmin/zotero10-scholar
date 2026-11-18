@@ -104,7 +104,152 @@
     if (result.action === "skip" && result.reason !== "unchanged") return result;
     return {...result,action:"write",fields:{...result.fields,DOI:doi}};
   }
-  const api = { query, select, resolvedPlan };
+  function titleKey(value) {
+    // PDF extraction may leave a soft hyphen or split a word at a line end.
+    return key(text(value).replace(/\u00ad/g, "").replace(/([a-z])-\s+([a-z])/gi, "$1$2"));
+  }
+
+  function conferenceQuery(item) {
+    if (item.itemType !== "conferencePaper" || text(item.DOI)) return null;
+    const first = authors(item)[0];
+    if (!first || titleKey(item.title).length < 12) return null;
+    const name = first.name || [first.firstName, first.lastName].filter(Boolean).join(" ");
+    if (!name || name.length > 200) return null;
+    const date = year(item.date);
+    const anchor = titleKey(item.title).split(" ").sort((a,b)=>b.length-a.length)[0];
+    const dateFilter = date ? `FILTER(STR(?year) IN ("${Number(date)-1}", "${date}", "${Number(date)+1}"))` : "";
+    // Anchor the query to an indexed author signature. A global title scan is
+    // prohibitively expensive on the full bibliography.
+    return `PREFIX dblp: <https://dblp.org/rdf/schema#>
+SELECT ?paper ?title ?year ?venue ?url ?name ?ordinal WHERE {
+  { SELECT DISTINCT ?paper ?title ?year ?venue WHERE {
+    ?first dblp:signatureDblpName ${JSON.stringify(name)} ; dblp:signaturePublication ?paper .
+    ?paper a dblp:Inproceedings ; dblp:title ?title ; dblp:yearOfEvent ?year ; dblp:publishedIn ?venue .
+    FILTER(CONTAINS(LCASE(STR(?title)), ${JSON.stringify(anchor)}))
+    ${dateFilter}
+  } LIMIT 21 }
+  ?paper dblp:hasSignature ?signature .
+  ?signature dblp:signatureDblpName ?name ; dblp:signatureOrdinal ?ordinal .
+  OPTIONAL { ?paper dblp:primaryDocumentPage ?url }
+} LIMIT 1001`;
+  }
+
+  function conferenceRecords(bindings) {
+    if (!Array.isArray(bindings) || bindings.length >= 1001) return [];
+    const records = new Map();
+    for (const row of bindings) {
+      const value = field => text(row?.[field]?.value);
+      const id = value("paper"), ordinal = Number(value("ordinal"));
+      if (!/^https:\/\/dblp\.org\/rec\/conf\/[\w/-]+$/.test(id) || !Number.isInteger(ordinal) || ordinal < 1) continue;
+      if (!records.has(id)) records.set(id, { id, title:value("title").replace(/\.$/, ""), date:value("year"),
+        proceedingsTitle:value("venue"), url:value("url"), names:new Map() });
+      records.get(id).names.set(ordinal, value("name").replace(/ \d{4}$/, ""));
+    }
+    if (records.size >= 21) return [];
+    return [...records.values()].filter(record => record.names.has(1) && /^\d{4}$/.test(record.date)).map(record => ({
+      ...record, itemType:"conferencePaper", creators:[...record.names].sort((a,b)=>a[0]-b[0]).map(([,name]) => {
+        const parts = name.split(" ");
+        return {creatorType:"author",lastName:parts.pop(),firstName:parts.join(" ")};
+      })
+    }));
+  }
+
+  function verifiedPlan(item, source, options, catalog, withCreators = true) {
+    const fields = {};
+    for (const field of Metadata.DOI_FIELDS) {
+      const value = source[field];
+      if (typeof value === "string" && value.trim() && value.length <= 100000 && !/\u0000/.test(value)
+          && value.trim() !== text(item[field])) fields[field] = value.trim();
+    }
+    const cleanup = Metadata.plan({...item,...fields}, {title:options.title !== false, titleCase:options.titleCase,
+      protectedTerms:options.protectedTerms, conference:options.conference !== false,
+      doi:false,pages:false,numbers:false,language:false,abbreviation:false}, undefined, catalog);
+    Object.assign(fields, cleanup.fields);
+    for (const field of Object.keys(fields)) if (fields[field] === text(item[field])) delete fields[field];
+    const creators = withCreators && Metadata.normalizeCreators(source.creators);
+    const changed = creators && JSON.stringify(creators) !== JSON.stringify(Metadata.normalizeCreators(item.creators));
+    return Object.keys(fields).length || changed
+      ? {action:"write",fields,...(changed ? {creators} : {})} : {action:"skip",reason:"unchanged",fields:{}};
+  }
+
+  function conferencePlan(item, records, options, catalog) {
+    const known = authors(item), localYear = year(item.date);
+    const found = records.filter(record => {
+      if (record.itemType !== "conferencePaper" || !titleKey(item.title) || titleKey(item.title) !== titleKey(record.title)
+          || !known.length || !record.creators.length || !authorMatch(known[0],record.creators[0])) return false;
+      if (!known.slice(1,3).every(author => record.creators.some(other => authorMatch(author,other)))) return false;
+      if (localYear && Math.abs(Number(localYear)-Number(record.date)) > 1) return false;
+      const candidate = {venues:[record.proceedingsTitle],ISSN:[]};
+      return venueNames(item).length ? sameVenue(item,candidate,catalog) : Boolean(localYear);
+    });
+    if (found.length !== 1) return {action:"skip",reason:found.length ? "search-ambiguous" : "search-no-match",fields:{}};
+    // DBLP author names are used to verify identity. Preserve Zotero's name
+    // components instead of guessing surname boundaries from a display name.
+    return verifiedPlan(item,found[0],options,catalog,false);
+  }
+
+  function arxivDOI(item) {
+    const ids = [text(item.url).match(/^https?:\/\/(?:www\.)?arxiv\.org\/(?:abs|pdf)\/((?:\d{4}\.\d{4,5}|[a-z.-]+\/\d{7}))(?:v\d+)?(?:\.pdf)?(?:[?#].*)?$/i)?.[1],
+      text(item.archiveID).match(/^(?:arxiv:)?((?:\d{4}\.\d{4,5}|[a-z.-]+\/\d{7}))(?:v\d+)?$/i)?.[1]].filter(Boolean);
+    return ids.length && new Set(ids.map(id=>id.toLowerCase())).size === 1 ? "10.48550/arxiv." + ids[0] : "";
+  }
+
+  function preprintQuery(item) {
+    const first = authors(item)[0], title = titleKey(item.title);
+    if (item.itemType !== "preprint" || text(item.DOI) || !first || title.length < 12 || title.length > 1000
+        || /[<>\u0000-\u001f]/.test(text(item.title)) || !year(item.date)) return null;
+    const surname = key(first.lastName || first.name);
+    if (!surname) return null;
+    const words = title.split(" ").filter(word => word.length >= 4);
+    if (!words.length) return null;
+    return `titles.title:(${words.join(" OR ")}) AND creators.name:(${surname})`;
+  }
+
+  function dataCiteSource(record) {
+    const data = record?.attributes;
+    if (data?.types?.resourceTypeGeneral !== "Preprint" || !Metadata.doiKey(data.doi) || !Array.isArray(data.creators)) return null;
+    const creators = data.creators.map(author => {
+      if (author.familyName) return {creatorType:"author",firstName:author.givenName || "",lastName:author.familyName};
+      const parts = text(author.name).split(",");
+      return parts.length === 2 ? {creatorType:"author",firstName:parts[1].trim(),lastName:parts[0].trim()}
+        : {creatorType:"author",name:text(author.name)};
+    });
+    if (!Metadata.normalizeCreators(creators) || !text(data.titles?.[0]?.title) || !Number.isInteger(data.publicationYear)) return null;
+    return {itemType:"preprint",DOI:data.doi,title:data.titles[0].title,creators,date:String(data.publicationYear),url:text(data.url)};
+  }
+
+  function preprintPlan(item, records, options, catalog) {
+    if (item.itemType !== "preprint") return {action:"skip",reason:"unsupported-type",fields:{}};
+    const existing = Metadata.doiKey(item.DOI), identifier = arxivDOI(item).toLowerCase(), known = authors(item);
+    if (text(item.DOI) && !existing) return {action:"skip",reason:"invalid-doi",fields:{}};
+    const found = new Map();
+    for (const source of records.map(dataCiteSource).filter(Boolean)) {
+      const doi = Metadata.doiKey(source.DOI);
+      if (existing && doi !== existing) continue;
+      if (identifier && doi !== identifier) continue;
+      if (!existing) {
+        if (!known.length || !authorMatch(known[0],source.creators[0])
+            || !known.slice(1,3).every(author => source.creators.some(other => authorMatch(author,other)))) continue;
+        if (year(item.date) && Math.abs(Number(year(item.date))-Number(source.date)) > 1) continue;
+        if (titleKey(item.title) !== titleKey(source.title)) {
+          // A supplied arXiv identifier independently verifies renamed versions.
+          // Without one, title variants require two corroborating authors, an
+          // agreeing year, and at most one differing word in a long title.
+          const local = titleKey(item.title).split(" "), remote = titleKey(source.title).split(" ");
+          const near = known.length >= 2 && year(item.date) && local.length >= 10 && local.length === remote.length
+            && local.slice(0,4).every((word,index)=>word === remote[index])
+            && local.filter((word,index)=>word !== remote[index]).length <= 1;
+          if (!identifier && !near) continue;
+        }
+      }
+      found.set(doi,source);
+    }
+    if (found.size !== 1) return {action:"skip",reason:found.size ? "search-ambiguous" : "search-no-match",fields:{}};
+    return verifiedPlan(item,[...found.values()][0],options,catalog);
+  }
+
+  const api = { query, select, resolvedPlan, conferenceQuery, conferenceRecords, conferencePlan,
+    arxivDOI, preprintQuery, dataCiteSource, preprintPlan };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ScholarSearch = api;
 })(globalThis);

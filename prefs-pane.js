@@ -43,7 +43,7 @@ var ScholarRankPrefs = {
     const refreshStatus = () => {
       if (!status.isConnected || !plugin.active) { win.clearInterval(timer); return; }
       const items = plugin.selectedItems().filter(item => plugin.supported(item));
-      doc.getElementById("zsr10-selection-summary").textContent = `已选中 ${items.length} 条期刊/会议文献，其中 ${items.filter(item => plugin.editable(item)).length} 条可编辑。`;
+      doc.getElementById("zsr10-selection-summary").textContent = `已选中 ${items.length} 条文献，其中 ${items.filter(item => plugin.editable(item)).length} 条可编辑。`;
       status.textContent = plugin.status;
       for (const id of Object.keys(actions)) doc.getElementById("zsr10-" + id).disabled = plugin.busy;
       cancel.hidden = !plugin.downloadTask;

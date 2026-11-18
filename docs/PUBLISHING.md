@@ -12,7 +12,7 @@
 python scripts/export-source.py
 ```
 
-默认输出不含指标整表的 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.2.0-source.zip`。
+默认输出不含指标整表的 `publish/zotero10-scholar/` 和 `dist/zotero10-scholar-3.2.1-source.zip`。
 目录已有内容时不会覆盖；重新导出请指定一个新目录，例如：
 
 ```sh
@@ -36,7 +36,7 @@ python scripts/build.py
 python scripts/prepare-smoke.py --auto-close
 ```
 
-唯一产物为 `dist/zotero10-scholar-3.2.0.xpi`，内置 CCF/JCR/CAS 表；缺少任一表会报错。没有额外构建开关或第二种安装包。
+唯一产物为 `dist/zotero10-scholar-3.2.1.xpi`，内置 CCF/JCR/CAS 表；缺少任一表会报错。没有额外构建开关或第二种安装包。
 隔离测试准备工具不会自动启动 Zotero，按[测试说明](TESTING.md)检查路径后启动，并核对实际运行报告。
 
 **本地生成含表 XPI 不等于取得了数据公开再分发权。** 本项目 MIT 许可只覆盖软件，完整指标表的公开发布须另行确认权利人的授权。

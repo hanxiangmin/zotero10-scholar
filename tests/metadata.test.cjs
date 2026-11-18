@@ -254,3 +254,52 @@ test("DOI enrichment shares the conference-name rule instead of restoring annual
   assert.equal(result.fields.date,undefined);
   assert.equal(M.doiPlan(before,source,{conference:false},conferenceCatalog()).fields.proceedingsTitle,source.bookTitle);
 });
+
+
+// Regressions for proceedings without DOIs and PDF-derived preprint titles.
+const neuripsTitle = "Conference on Neural Information Processing Systems";
+const neuripsCatalog = new Catalog([{schemaVersion:1,kind:"ccf",edition:2026,source:"Synthetic regression fixture",
+  records:[{type:"conference",title:neuripsTitle,abbreviation:"NeurIPS",rank:"A"}]}]);
+const transmilTitle = "TransMIL: Transformer based correlated multiple instance learning for whole slide image classification";
+const transmilItem = {itemType:"conferencePaper",title:transmilTitle,DOI:"",date:"2021",proceedingsTitle:"Advances in Neural Information Processing Systems 34",
+  creators:[{creatorType:"author",firstName:"Zhuchen",lastName:"Shao"},{creatorType:"author",firstName:"Hao",lastName:"Bian"}]};
+
+test("NeurIPS series volumes and old acronyms identify the main conference without admitting workshops or conflicts", () => {
+  for (const venue of ["Advances in Neural Information Processing Systems 34", "Advances in Neural Information Processing Systems 34 (NeurIPS2021)", "NIPS 2021", "NeurIPS2021"]) {
+    const before={...transmilItem,proceedingsTitle:venue};
+    assert.equal(neuripsCatalog.lookup(before).text,"A",venue);
+    assert.equal(M.plan(before,{},undefined,neuripsCatalog).fields.conferenceName,neuripsTitle,venue);
+    assert.equal(neuripsCatalog.lookup({...before,proceedingsTitle:venue+" Workshops"}).hasData,false);
+    assert.equal(neuripsCatalog.lookup({...before,conferenceName:"Unrelated meeting"}).hasData,false);
+  }
+  assert.equal(neuripsCatalog.lookup({itemType:"journalArticle",publicationTitle:transmilItem.proceedingsTitle}).text,"A");
+});
+
+test("a no-DOI conference record requires an agreeing title, ordered author evidence, year and venue", () => {
+  const record={id:"https://dblp.org/rec/conf/nips/Synthetic21",itemType:"conferencePaper",title:transmilTitle,date:"2021",proceedingsTitle:"NeurIPS",
+    url:"https://proceedings.neurips.cc/paper/2021/hash/test-Abstract.html",creators:transmilItem.creators};
+  const plan=S.conferencePlan(transmilItem,[record],{},neuripsCatalog);
+  assert.equal(plan.fields.conferenceName,neuripsTitle);assert.equal(plan.fields.proceedingsTitle,neuripsTitle);
+  assert.equal(plan.fields.DOI,undefined);assert.equal(plan.creators,undefined);
+  assert.equal(S.conferencePlan(transmilItem,[record,{...record,id:record.id+"Other"}],{},neuripsCatalog).reason,"search-ambiguous");
+  for (const change of [{title:"A different paper"},{date:"2015"},{proceedingsTitle:"NeurIPS Workshops"},{creators:[{creatorType:"author",firstName:"Other",lastName:"Shao"}]}])
+    assert.equal(S.conferencePlan(transmilItem,[{...record,...change}],{},neuripsCatalog).action,"skip");
+});
+
+test("preprints match their DataCite version and repair line-break titles while rejecting another paper or a proceedings DOI", () => {
+  const before={itemType:"preprint",title:"You are AllSet: A multiset learning FRAME- work for hypergraph neural networks",DOI:"",date:"2022",
+    creators:[{creatorType:"author",firstName:"Eli",lastName:"Chien"},{creatorType:"author",firstName:"Chao",lastName:"Pan"}]};
+  const record={attributes:{doi:"10.48550/arxiv.2106.13264",types:{resourceTypeGeneral:"Preprint"},publicationYear:2021,
+    titles:[{title:"You are AllSet: A Multiset Function Framework for Hypergraph Neural Networks"}],url:"https://arxiv.org/abs/2106.13264",
+    creators:[{givenName:"Eli",familyName:"Chien"},{givenName:"Chao",familyName:"Pan"}]}};
+  const plan=S.preprintPlan(before,[record],{},null);
+  assert.equal(plan.action,"write");assert.equal(plan.fields.date,"2021");assert.equal(plan.fields.DOI,record.attributes.doi);
+  assert.equal(plan.fields.title,"You are AllSet: A multiset function framework for hypergraph neural networks");
+  assert.equal(plan.fields.conferenceName,undefined);assert.equal(plan.fields.callNumber,undefined);
+  assert.equal(S.preprintPlan({...before,creators:before.creators.slice(0,1)},[record],{},null).action,"skip");
+  assert.equal(S.preprintPlan({...before,url:"https://arxiv.org/abs/1111.12345"},[record],{},null).action,"skip");
+  assert.equal(S.preprintPlan(before,[{attributes:{...record.attributes,types:{resourceTypeGeneral:"ConferencePaper"}}}],{},null).action,"skip");
+  assert.equal(S.preprintPlan(before,[record,{attributes:{...record.attributes,doi:"10.1234/other"}}],{},null).reason,"search-ambiguous");
+  assert.equal(S.arxivDOI({...before,url:"https://arxiv.org/pdf/2106.13264v4.pdf"}),record.attributes.doi);
+  assert.equal(S.preprintPlan({...before,DOI:"bad DOI"},[record],{},null).reason,"invalid-doi");
+});

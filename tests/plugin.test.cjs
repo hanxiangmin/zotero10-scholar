@@ -74,7 +74,7 @@ function fixtureDatasets() {
 async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), fastTimeout = false } = {}) {
   const state = {
     items: new Map(), persisted: new Map(), alerts: [], errors: [], saveIDs: [], reloadIDs: [], dialogs: [],
-    doiResponses: new Map(), doiLookups: [], crossrefResponses: new Map(), crossrefLookups: [], titleResponses: [], titleLookups: [], commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
+    doiResponses: new Map(), doiLookups: [], crossrefResponses: new Map(), crossrefLookups: [], titleResponses: [], titleLookups: [], providerResponses:new Map(), providerLookups:[], commits: 0, rollbacks: 0, undoActions: [], observer: null, transactionRequested: deferred(),
     transactionGate: null, pickerQueue: [], inputFiles: new Map(),
     outputFiles: new Map([...localFiles].map(([filename, data]) => [filename, structuredClone(data)])),
     writes: [], beforeWrite: null, autoNew: true, resourceReads: [], localReads: [],
@@ -167,6 +167,12 @@ async function harness({ builtins = fixtureDatasets(), localFiles = new Map(), f
     } },
     HTTP: { request: async (method, url, options) => {
       assert.equal(method, "GET"); assert.equal(options.responseType, "json"); assert.equal(options.timeout, 15000);
+      if (url.startsWith("https://api.datacite.org/") || url.startsWith("https://sparql.dblp.org/")) {
+        state.providerLookups.push(url);
+        const response = state.providerResponses.get(url.startsWith("https://api.datacite.org/") ? "datacite" : "dblp");
+        if (!response || response instanceof Error) throw response || new Error("No synthetic provider response");
+        return {response:await response};
+      }
       if (url.startsWith("https://api.crossref.org/works?")) {
         state.titleLookups.push(url);
         const value=await state.titleResponses;
@@ -950,4 +956,56 @@ test("automatic cleanup and ranks never call the new title-search endpoint", asy
   state.observer.notify("add","item",[record.id]);await plugin.pendingAuto;
   assert.equal(record.fields.DOI,"");assert.equal(record.fields.callNumber,"A|20.4|Q1|1区TOP");
   assert.equal(state.titleLookups.length,0);assert.equal(state.doiLookups.length,0);
+});
+
+
+function preprintFixture() {
+  return {attributes:{doi:"10.48550/arxiv.2106.13264",types:{resourceTypeGeneral:"Preprint"},publicationYear:2021,
+    titles:[{title:"You are AllSet: A Multiset Function Framework for Hypergraph Neural Networks"}],
+    url:"https://arxiv.org/abs/2106.13264",creators:[{givenName:"Eli",familyName:"Chien"},{givenName:"Chao",familyName:"Pan"}]}};
+}
+
+test("manual preprint update uses DataCite through the management entry point and preserves the original item", async () => {
+  const {plugin,state,item}=await harness();
+  const record=item(120,{title:"You are AllSet: A multiset learning FRAME- work for hypergraph neural networks",DOI:"",date:"2022",
+    creators:[{creatorType:"author",firstName:"Eli",lastName:"Chien"},{creatorType:"author",firstName:"Chao",lastName:"Pan"}],callNumber:"Keep"});
+  record.itemType="preprint";
+  state.providerResponses.set("datacite",{data:[preprintFixture()]});
+  plugin.selectedItems=()=>[record];
+  await plugin.manageSelected("doi");
+  assert.equal(record.fields.DOI,"10.48550/arxiv.2106.13264");assert.equal(record.fields.date,"2021");
+  assert.equal(record.fields.callNumber,"Keep");assert.equal(record.itemType,"preprint");
+  assert.equal(state.items.size,1);assert.equal(state.doiLookups.length,0);assert.equal(state.titleLookups.length,0);
+  assert.equal(new URL(state.providerLookups[0]).searchParams.get("sort"),"relevance");
+  state.providerResponses.set("datacite",{data:preprintFixture()});
+  assert.equal((await plugin.updateByDOI([record],{silent:true})).unchanged,1);
+  assert.match(state.providerLookups.at(-1),/dois\/10\.48550%2Farxiv\.2106\.13264$/);
+});
+
+test("provider failures and concurrent preprint edits preserve the user's metadata", async () => {
+  for (const response of [new Error("HTTP 429"),{data:[{attributes:{types:{resourceTypeGeneral:"ConferencePaper"}}}]}]) {
+    const {plugin,state,item}=await harness();
+    const record=item(121,{DOI:"10.48550/arxiv.2106.13264",title:"Original"});record.itemType="preprint";
+    state.providerResponses.set("datacite",response);
+    await plugin.updateByDOI([record],{silent:true});
+    assert.equal(record.fields.title,"Original");assert.equal(state.saveIDs.length,0);
+  }
+  const {plugin,state,item}=await harness();
+  const record=item(122,{DOI:"10.48550/arxiv.2106.13264",title:"Original"});record.itemType="preprint";
+  const gate=deferred();state.providerResponses.set("datacite",gate.promise);
+  const pending=plugin.updateByDOI([record],{silent:true});
+  record.fields.title="Manual edit during lookup";
+  gate.resolve({data:preprintFixture()});
+  assert.equal((await pending)["manually-edited"],1);assert.equal(record.fields.title,"Manual edit during lookup");
+});
+
+test("a no-DOI conference reaches DBLP only after Crossref has no matching record", async () => {
+  const {plugin,state,item}=await harness();
+  const title="A fictional paper about correlated multiple instance learning";
+  const record=item(123,{title,DOI:"",date:"2021",publicationTitle:"",proceedingsTitle:"",
+    creators:[{creatorType:"author",firstName:"Jane",lastName:"Smith"}]});record.itemType="conferencePaper";
+  state.providerResponses.set("dblp",{results:{bindings:[Object.fromEntries(Object.entries({paper:"https://dblp.org/rec/conf/nips/Test21",title:title+".",year:"2021",venue:"NeurIPS",url:"https://example.org/paper",name:"Jane Smith",ordinal:"1"}).map(([k,value])=>[k,{value}]))]}});
+  assert.equal((await plugin.updateByDOI([record],{silent:true})).written,1);
+  assert.equal(record.fields.proceedingsTitle,"NeurIPS");assert.equal(record.fields.DOI,"");
+  assert.equal(state.providerLookups.length,1);assert.equal(state.titleLookups.length,1);assert.equal(state.doiLookups.length,0);
 });

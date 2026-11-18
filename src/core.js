@@ -130,6 +130,14 @@
     const ordinal = "(?:(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)\\s+)?(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|eleventh|twelfth|thirteenth|fourteenth|fifteenth|sixteenth|seventeenth|eighteenth|nineteenth|twentieth|thirtieth|fortieth|fiftieth|sixtieth|seventieth|eightieth|ninetieth|hundredth)";
     let name = normalizeTitle(value).replace(new RegExp("\\b(" + ordinal + ")(?=international\\b)", "g"), "$1 ");
     const short = normalizeTitle(abbreviation);
+    // This proceedings series uses a volume number instead of a conference
+    // prefix. NIPS is the older name of the same meeting.
+    if (short === "neurips") {
+      name = name.replace(/\b(?:neurips|nips)(?=(?:19|20)\d{2}\b)/g, "neurips ")
+        .replace(/\bnips\b/g, "neurips");
+      name = name.replace(/^advances in neural information processing systems(?: \d{1,3})?(?= |$)/,
+        "conference on neural information processing systems");
+    }
     if (short) {
       // normalizeTitle leaves only letters, digits and spaces: safe in a RegExp.
       const suffix = new RegExp("(?:^| )" + short + "(?: (?:\\d{2}|(?:19|20)\\d{2}))?$");
@@ -158,7 +166,8 @@
         const full = key.split(" ").length >= 2;
         if (full && names.some(n => conferenceName(n, record.abbreviation) === key)) {
           candidates.push({ record, length: key.length });
-        } else if (!full && key.length >= 3 && names.some(n => (` ${normalizeTitle(n)} `).includes(` ${key} `))) {
+        } else if (!full && key.length >= 3 && names.some(n => conferenceName(n, record.abbreviation) === key
+          || (` ${normalizeTitle(n)} `).includes(` ${key} `))) {
           acronyms.push({ record, key });
         }
       }
@@ -206,7 +215,8 @@
         return { supported: false, reason: "unsupported-type", text: "", hasData: false };
       }
       const proceedings = item.itemType === "journalArticle"
-        && /\bproceedings\b/i.test(item.publicationTitle || "") && /\b(?:conference|symposium|meeting)\b/i.test(item.publicationTitle || "");
+        && ((/\bproceedings\b/i.test(item.publicationTitle || "") && /\b(?:conference|symposium|meeting)\b/i.test(item.publicationTitle || ""))
+          || /^advances in neural information processing systems\b/i.test(item.publicationTitle || ""));
       const proceedingsMatch = proceedings ? conferenceMatch(this.indexes.ccf, { proceedingsTitle: item.publicationTitle }, { fullOnly: true }) : null;
       const conference = item.itemType === "conferencePaper" || Boolean(proceedingsMatch?.record)
         || proceedingsMatch?.reason === "excluded-conference-track";

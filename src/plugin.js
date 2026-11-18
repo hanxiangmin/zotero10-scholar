@@ -12,7 +12,7 @@
   // Run the new-item lookup afterwards; this avoids both a race and retries.
   const AUTO_NOTIFIER_PRIORITY = 700;
   const REASONS = {
-    "unsupported-type": "非期刊/会议条目", "no-data": "没有匹配的数据，保留原值",
+    "unsupported-type": "此操作不支持该条目类型", "no-data": "没有匹配的数据，保留原值",
     "manually-edited": "处理期间条目发生变化，已跳过", "existing-call-number": "已有索书号，自动模式保留",
     "unchanged": "无需更新", "read-only": "只读或订阅库", "invalid-doi": "没有有效 DOI",
     "doi-mismatch": "DOI 不一致或结果不唯一", "doi-type-mismatch": "返回的文献类型不同",
@@ -21,7 +21,7 @@
     "update-failed": "更新失败，本批修改未保存",
     "search-insufficient": "无 DOI 且标题、作者或出版信息不足，未查询",
     "search-no-match": "未找到信息一致的可信结果，保留原值",
-    "search-ambiguous": "匹配到多个不同 DOI，保留原值",
+    "search-ambiguous": "匹配到多个可信结果，保留原值",
     "search-failed": "标题联网检索失败，保留原值",
     "pdf-existing": "已有全文附件，保留原文件", "pdf-no-source": "缺少有效 DOI 和论文网址",
     "pdf-blocked-source": "已跳过 Google 来源", "pdf-invalid-url": "下载网址无效或不允许",
@@ -162,7 +162,7 @@
     async manageSelected(action, win = this.window()) {
       const items = this.selectedItems();
       if (!items.some(item => this.supported(item))) {
-        this.alert("请先在 Zotero 主窗口中选中期刊论文或会议论文，再返回此处操作。", win); return;
+        this.alert("请先在 Zotero 主窗口中选中文献，再返回此处操作。", win); return;
       }
       if (action === "metadata") return this.apply(items, { win, metadata: true, updateRanks: false });
       if (action === "doi") return this.updateByDOI(items, { win });
@@ -176,13 +176,13 @@
     },
 
     supported(item) {
-      return item?.isRegularItem() && ["journalArticle", "conferencePaper"].includes(item.itemType);
+      return item?.isRegularItem() && ["journalArticle", "conferencePaper", "preprint"].includes(item.itemType);
     },
     editable(item) {
       return this.supported(item) && !item.deleted && !item.isFeedItem && item.library?.libraryType !== "feed" && item.isEditable();
     },
     snapshot(item) {
-      const fields = [...new Set(["title", "publicationTitle", "journalAbbreviation", "ISSN", "proceedingsTitle", "conferenceName", "callNumber", "extra", ...Metadata.DOI_FIELDS])];
+      const fields = [...new Set(["title", "publicationTitle", "journalAbbreviation", "ISSN", "proceedingsTitle", "conferenceName", "archiveID", "callNumber", "extra", ...Metadata.DOI_FIELDS])];
       const data = { itemType: item.itemType, key: item.key, id: item.id, libraryID: item.libraryID };
       for (const field of fields) {
         data[field] = Zotero.ItemFields.isValidForType(Zotero.ItemFields.getID(field), item.itemTypeID) ? String(item.getField(field) || "") : "";
@@ -491,6 +491,31 @@
       return records;
     },
 
+    async lookupConference(before) {
+      const query = Search.conferenceQuery(before);
+      if (!query) return [];
+      const url = "https://sparql.dblp.org/sparql?query=" + encodeURIComponent(query) + "&format=json";
+      const response = await Zotero.HTTP.request("GET", url, {responseType:"json",timeout:15000});
+      const rows = response.response?.results?.bindings;
+      if (!Array.isArray(rows)) throw new Error("会议检索返回格式异常。");
+      return Search.conferenceRecords(rows);
+    },
+
+    async lookupPreprint(before) {
+      const doi = Metadata.doiKey(before.DOI) || Search.arxivDOI(before);
+      let url = "https://api.datacite.org/dois/";
+      if (doi) url += encodeURIComponent(doi);
+      else {
+        const query = Search.preprintQuery(before);
+        if (!query) return [];
+        url += "?query=" + encodeURIComponent(query) + "&resource-type-id=preprint&sort=relevance&page%5Bsize%5D=20";
+      }
+      const response = await Zotero.HTTP.request("GET",url,{responseType:"json",timeout:15000});
+      const data = response.response?.data;
+      if (!data || (typeof data !== "object")) throw new Error("预印本检索返回格式异常。");
+      return Array.isArray(data) ? data : [data];
+    },
+
     // Keep the method name for existing callers; this is the manual online
     // command, with DOI-first lookup and an empty-DOI bibliographic fallback.
     async updateByDOI(items, { win = this.window(), silent = false } = {}) {
@@ -507,6 +532,22 @@
           if (!this.supported(item)) { count("unsupported-type"); continue; }
           if (!this.editable(item)) { count("read-only"); continue; }
           const before = this.snapshot(item);
+          if (before.itemType === "preprint") {
+            if (before.DOI.trim() && !Metadata.doiKey(before.DOI)) { count("invalid-doi"); continue; }
+            if (!Metadata.doiKey(before.DOI) && !Search.arxivDOI(before) && !Search.preprintQuery(before)) {
+              count("search-insufficient"); continue;
+            }
+            try {
+              const key = "preprint:" + JSON.stringify(before);
+              if (!searches.has(key)) searches.set(key,this.lookupPreprint(before));
+              const records = await searches.get(key);
+              if (!this.active) return;
+              const plan = Search.preprintPlan(before,records,this.metadataOptions(),this.catalog);
+              if (plan.action === "write") changes.push({item,before,plan});
+              else count(plan.reason);
+            } catch (error) { Zotero.logError(error); count("search-failed"); }
+            continue;
+          }
           let doi = Metadata.doiKey(before.DOI), discovered = null;
           if (!doi) {
             if (before.DOI.trim()) { count("invalid-doi"); continue; }
@@ -519,7 +560,19 @@
             } catch (error) { Zotero.logError(error); count("search-failed"); continue; }
             if (!this.active) return;
             const match = Search.select(before, records, this.catalog);
-            if (!match.record) { count(match.reason); continue; }
+            if (!match.record) {
+              if (match.reason !== "search-no-match" || !Search.conferenceQuery(before)) { count(match.reason); continue; }
+              try {
+                const key = "conference:" + Search.conferenceQuery(before);
+                if (!searches.has(key)) searches.set(key,this.lookupConference(before));
+                const records = await searches.get(key);
+                if (!this.active) return;
+                const plan = Search.conferencePlan(before,records,this.metadataOptions(),this.catalog);
+                if (plan.action === "write") changes.push({item,before,plan});
+                else count(plan.reason);
+              } catch (error) { Zotero.logError(error); count("search-failed"); }
+              continue;
+            }
             discovered = match.record; doi = Metadata.doiKey(discovered.DOI);
           }
           let sources;

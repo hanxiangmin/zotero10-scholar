@@ -50,3 +50,5 @@ python scripts/prepare-smoke.py --auto-close
 
 未运行的项目不能声称通过：本地成功不等于 GitHub Actions 已运行，VM 测试也不代替所有实机组合。
 大量文献、跨设备同步、不同操作系统及所有第三方插件组合尚不在完整实测范围内。
+
+3.2.1 的独立实机步骤还联网核对 TransMIL 的 DBLP 会议记录、标准 NeurIPS 名称和 CCF A，以及 AllSet 预印本的 DataCite 标题、arXiv DOI、2021 年份和重复更新。

@@ -547,6 +547,43 @@ async function runSmoke(rootURI) {
     dialog.close();return {liveNetwork:true,query:"Deep learning / Yann LeCun / Nature / 2015",DOI:record.getField("DOI"),updatedInPlace:true,undoRedo:true};
   });
 
+  await step("live-TransMIL-without-DOI-updates-NeurIPS-and-CCF", async () => {
+    await guard();
+    const record = new Zotero.Item("conferencePaper");
+    record.libraryID = Zotero.Libraries.userLibraryID;
+    record.setField("title", "TransMIL: Transformer based correlated multiple instance learning for whole slide image classification");
+    record.setField("proceedingsTitle", "Advances in Neural Information Processing Systems 34");
+    record.setField("date", "2021");
+    record.setCreators([{creatorType:"author",firstName:"Zhuchen",lastName:"Shao"}, {creatorType:"author",firstName:"Hao",lastName:"Bian"}]);
+    await record.saveTx({skipSelect:true});
+    same((await plugin.updateByDOI([record],{silent:true})).written,1,"Live DBLP metadata update");
+    same(record.getField("conferenceName"),"Conference on Neural Information Processing Systems","Standard NeurIPS name");
+    same(record.getField("proceedingsTitle"),record.getField("conferenceName"),"Consistent proceedings title");
+    same(record.getField("DOI"),"","No invented proceedings DOI");
+    same((await plugin.apply([record],{silent:true})).written,1,"Separate rank command");
+    same(record.getField("callNumber"),"A","Bundled NeurIPS CCF grade");
+    return {liveNetwork:true,source:"DBLP",conference:record.getField("conferenceName"),rank:record.getField("callNumber")};
+  });
+
+  await step("live-AllSet-preprint-updates-from-DataCite-without-converting-the-item", async () => {
+    await guard();
+    const record = new Zotero.Item("preprint");
+    record.libraryID = Zotero.Libraries.userLibraryID;
+    record.setField("title","You are AllSet: A multiset learning FRAME- work for hypergraph neural networks");
+    record.setField("date","2022");
+    record.setCreators([{creatorType:"author",firstName:"Eli",lastName:"Chien"}, {creatorType:"author",firstName:"Chao",lastName:"Pan"}]);
+    await record.saveTx({skipSelect:true});
+    await menuState(win,[record]);
+    const counts = await plugin.updateByDOI([record],{silent:true});
+    same(counts.written,1,"Live preprint title fallback " + JSON.stringify(counts));
+    same(record.itemType,"preprint","Original item type");
+    same(record.getField("DOI").toLowerCase(),"10.48550/arxiv.2106.13264","Verified arXiv DOI");
+    same(record.getField("date"),"2021","Preprint publication year");
+    same(record.getField("title"),"You are AllSet: A multiset function framework for hypergraph neural networks","Source title and sentence case");
+    same((await plugin.updateByDOI([record],{silent:true})).unchanged,1,"Repeated DOI-first lookup is idempotent");
+    return {liveNetwork:true,source:"DataCite",DOI:record.getField("DOI"),date:record.getField("date")};
+  });
+
   await step("live-MICCAI-conference-year-and-protected-title-case", async () => {
     await guard();
     const record=new Zotero.Item("conferencePaper");record.libraryID=Zotero.Libraries.userLibraryID;
